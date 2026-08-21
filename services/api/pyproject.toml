@@ -1,0 +1,57 @@
+# services/api — Assistant/API service (FastAPI + LangGraph agent).
+#
+# Latency-sensitive, stateless, scales on replicas. Declares only its own
+# runtime deps; shared code comes from the `shared` workspace member and dev
+# tooling from the workspace root. Version policy: exact-pinned, one minor
+# behind latest on a settled patch (no brand-new majors / `.0`s).
+
+[project]
+name = "api"
+version = "0.0.0"
+description = "Recap Assistant/API service: FastAPI + LangGraph agent."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "shared[local]",
+    # Web framework + ASGI server
+    "fastapi==0.138.2",
+    "uvicorn[standard]==0.50.2",
+    "python-multipart==0.0.31",   # multipart uploads
+    # Auth: PyJWT for tokens, pwdlib[argon2] for password hashing, Authlib for
+    # Google OAuth. (No python-jose — it pulls ecdsa/pyasn1 advisories.)
+    "pyjwt==2.13.0",  # 2.13.0 fixes PYSEC-2026-175/177/178/179 + GHSA-jq35-7prp-9v3f
+    "pwdlib[argon2]==0.2.1",
+    "authlib==1.6.12",
+    # Signs the short-lived session cookie that carries the OAuth CSRF state
+    # (Starlette SessionMiddleware, used by Authlib's redirect flow).
+    "itsdangerous==2.2.0",
+    # Metrics exposition for FastAPI. 8.x is required for FastAPI 0.138's route
+    # model (7.x's route resolver breaks on the lazy `_IncludedRouter`).
+    "prometheus-fastapi-instrumentator==8.0.2",
+    # Agent orchestration + LangChain chat-model integrations (the agent runs on
+    # these: tool-calling, streaming, and native fallbacks/retries). Versions
+    # track langchain-core (langgraph pins core>=1.4.7); kept in lockstep.
+    "langgraph==1.2.7",
+    "langchain-anthropic==1.4.8",
+    "langchain-openai==1.3.5",
+    # Durable LangGraph checkpointer (agent short-term memory), keyed by
+    # conversation id, in the source-of-truth Postgres. The saver speaks psycopg
+    # v3 (not the asyncpg used by SQLAlchemy elsewhere) and manages its own async
+    # pool. Bumped from 3.0.5 to 3.1.1 to fix PYSEC-2026-3635; still compatible
+    # with langgraph-checkpoint<5,>=2.1.2 (our 1.2.7 pulls 4.1.1). 3.1.1 (not
+    # the newer 3.1.2) is the chosen patch — the minimum fix version, with two
+    # weeks to settle rather than the days-old latest.
+    # psycopg[binary] bundles libpq so no system dep is needed in the image.
+    "langgraph-checkpoint-postgres==3.1.1",
+    "psycopg[binary]==3.2.13",
+    "psycopg-pool==3.2.8",
+]
+
+[tool.uv.sources]
+shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["api"]
