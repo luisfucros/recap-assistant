@@ -1,0 +1,37 @@
+# services/ingestion — Ingestion pipeline service (Celery workers + beat).
+#
+# CPU/memory-heavy; scales on worker count. Does all parse/chunk/embed/upsert
+# work. Declares only its own runtime deps; parsing/chunking/embedding and the
+# storage/vector clients come from the `shared` workspace member, dev tooling
+# from the workspace root. For local (offline) embeddings, sync with the
+# shared `local` extra. Version policy: exact-pinned, one minor behind latest
+# on a settled patch.
+
+[project]
+name = "ingestion"
+version = "0.0.0"
+description = "Recap ingestion pipeline: Celery workers + beat."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "shared",
+    # Task queue; [redis] pulls the Redis broker/result client.
+    # 5.5 line (mature) — 5.6 pulls a partly-pre-release kombu; both pin redis<=5.2.1 (see shared).
+    "celery[redis]==5.5.3",
+]
+
+[project.optional-dependencies]
+# Fully-local (offline) embeddings: pull the shared `local` extra
+# (torch + sentence-transformers) so the HuggingFace embedder can load a model
+# in-process. Heavy — installed only for the local profile:
+#   uv sync --package ingestion --extra local
+local = ["shared[local]"]
+
+[tool.uv.sources]
+shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ingestion"]
