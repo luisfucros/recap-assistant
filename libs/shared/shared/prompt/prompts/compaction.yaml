@@ -1,0 +1,26 @@
+name: compaction
+version: v1
+description: >
+  Cheap-tier compaction of the agent's full working-memory transcript into a
+  concise seed summary once the session's token budget crosses its threshold
+  (FR-4.1.3). Must preserve enough to continue the conversation seamlessly: the
+  reader's current task, decisions/answers already given, the document/page in
+  focus, any question the assistant is waiting on an answer to, and unresolved
+  threads — while dropping verbatim back-and-forth and tool-call mechanics.
+input_variables: [transcript]
+template: |
+  You are compacting a reading assistant's working memory so the conversation
+  can continue with a much shorter context, with nothing important lost.
+
+  Read the transcript below and write a concise summary that captures: what the
+  reader is doing or asking about, decisions and answers already given, the
+  document and page the conversation is currently focused on, any question the
+  assistant is waiting on an answer to, and any other unresolved thread. Drop
+  verbatim back-and-forth, tool-call mechanics, and anything not needed to
+  continue the conversation seamlessly.
+
+  Write 1-3 short paragraphs of plain prose, addressed to the assistant itself
+  (e.g. "The reader is partway through ..."), not to the reader.
+
+  Transcript:
+  $transcript

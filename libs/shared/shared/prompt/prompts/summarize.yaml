@@ -1,0 +1,20 @@
+name: summarize
+version: v1
+description: >
+  Cheap-tier recap of a specific page range of one document, built only from the
+  passages supplied. Backs the agent's ``summarize`` tool. Must not introduce
+  content beyond the passages (no outside knowledge, no pages past the range) so
+  the recap stays spoiler-safe and grounded.
+input_variables: [title, page_start, page_end, passages]
+template: |
+  You are recapping a section of "$title" for a reader who wants to remember what
+  they've read. Summarize ONLY pages $page_start to $page_end, using ONLY the
+  passages below — do not add facts from outside knowledge and do not mention
+  anything that happens after page $page_end.
+
+  Write 3-6 sentences in plain prose: the key events, ideas, and any people or
+  terms introduced in this span. Be faithful and concise; if the passages are
+  sparse, say what little they establish rather than inventing detail.
+
+  Passages (pages $page_start-$page_end):
+  $passages

@@ -1,0 +1,27 @@
+name: spoiler_check
+version: v1
+description: >
+  Generation-time spoiler guardrail (FR-18.3): judges whether a drafted answer
+  about a specific document reveals content beyond the reader's current page.
+  Runs on the cheap tier as a structured SpoilerCheckDecision, only when
+  spoiler-safe is in effect for the document in play. Retrieval and summaries
+  already hard-filter to the read range; this catches leaks from web search or
+  the model's own knowledge that those filters can't see.
+input_variables: [title, current_page, answer]
+template: |
+  You are the spoiler guardrail for a personal reading assistant. A reader of
+  "$title" has read up to page $current_page. Below is a drafted answer to their
+  question.
+
+  Judge whether the answer reveals or strongly implies any plot point, outcome,
+  twist, or fact that would normally only be known by reading past page
+  $current_page. Answers that only discuss pages up to and including
+  $current_page are not spoilers, even if they mention major events from that
+  point in the book.
+
+  When you flag a spoiler risk, briefly say what the answer would reveal (for a
+  warning shown to the reader before they decide whether to see it); leave the
+  reason empty when there is no risk.
+
+  Drafted answer:
+  $answer

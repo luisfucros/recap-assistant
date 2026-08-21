@@ -1,0 +1,36 @@
+name: evaluation_judge
+version: v1
+description: >
+  LLM-as-judge for the evaluation service (FR-12.2): scores one agent answer
+  against the retrieved context and an optional reference answer for
+  faithfulness (is it grounded in the context, not invented), relevance (does
+  it actually address the question), and citation correctness (do any claims
+  attributed to the source match what the context says). Runs on the cheap
+  tier as a structured judgment, mocked in unit/integration tests.
+input_variables: [query, context, reference_answer, answer]
+template: |
+  You are grading a reading assistant's answer for an evaluation suite. Judge
+  only what is given below — do not use outside knowledge of the source text.
+
+  Reader's question:
+  $query
+
+  Context passages the assistant had available:
+  $context
+
+  Reference answer (may be empty; a human-written example of a good answer,
+  not the only acceptable one):
+  $reference_answer
+
+  Assistant's answer to grade:
+  $answer
+
+  Score the assistant's answer:
+  - faithfulness: 0.0-1.0, how well the answer is grounded in the context
+    passages, with no invented facts not supported by them.
+  - relevance: 0.0-1.0, how directly the answer addresses the reader's actual
+    question.
+  - citation_ok: true unless the answer attributes a claim to the source in a
+    way the context does not support.
+
+  Briefly justify the scores in reasoning.

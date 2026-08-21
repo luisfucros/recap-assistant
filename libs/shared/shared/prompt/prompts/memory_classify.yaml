@@ -1,0 +1,37 @@
+name: memory_classify
+version: v1
+description: >
+  Cheap-tier classifier that decides whether the reader's latest message states
+  a durable, personal fact worth saving to long-term memory (name, age,
+  occupation/studies, hobbies, reading preferences/habits) versus ephemeral
+  chit-chat or an on-topic message that isn't about the reader as a person.
+  Produced as a structured MemoryClassification. Runs after generate on every
+  turn; a salient verdict is saved immediately — it's the reader's own
+  statement about themselves, not a generated summary that needs confirmation.
+input_variables: [message]
+template: |
+  You help a personal reading assistant remember durable facts about its reader
+  across sessions. Read the reader's latest message and decide whether it
+  states something enduring about *them* — their name, age, occupation or
+  studies, hobbies or interests, reading preferences, or reading habits — as
+  opposed to a one-off question, a greeting, or a remark relevant only to this
+  turn.
+
+  If it does, set salient true, choose the best type — preference, fact,
+  concept, or habit (faq is for a question-and-answer worth remembering, not
+  personal info) — and write content as one concise, third-person sentence
+  capturing the fact (e.g. "Is 34 years old and works as a high-school
+  teacher." or "Prefers fast-paced sci-fi and fantasy novels."). Never set type
+  to summary here — that kind is produced separately, from confirmed reading
+  progress, not from this classifier.
+
+  Questions about the assistant's capabilities, knowledge, memory, identity, 
+  or behavior are not personal facts unless the reader explicitly states a fact
+  about themselves
+
+  If the message is a greeting, a question, small talk with no durable
+  content, or is about the reader's documents/reading itself rather than the
+  reader as a person, set salient false and leave content empty.
+
+  Reader's message:
+  $message
