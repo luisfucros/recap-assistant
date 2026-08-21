@@ -1,0 +1,69 @@
+# Versioned evaluation dataset (FR-12.4) — a self-contained fixture "book",
+# not a real upload, so runs never touch a real user's library and are
+# reproducible from this file alone. Bump `version` (and keep the old file)
+# whenever cases or fixture text change meaningfully, so past runs stay
+# comparable to a fixed dataset rather than silently drifting.
+name: sample_v1
+version: v1
+
+documents:
+  - key: clockwork_garden
+    title: The Clockwork Garden
+    author: A. Writer
+    language: en
+    chunks:
+      - page: 1
+        chapter: "Chapter 1: The Gate"
+        text: >
+          Mira found the garden gate rusted shut behind the old observatory.
+          Its hinges were shaped like brass gears, and when she pressed her
+          palm to the center plate, the gears began to turn on their own,
+          grinding the gate open with a low mechanical sigh.
+      - page: 2
+        chapter: "Chapter 1: The Gate"
+        text: >
+          Inside, the garden was full of clockwork flowers that unfolded
+          their petals in time with a ticking she could feel in the ground.
+          Mira counted the ticks: exactly one per second, as if the whole
+          garden were a single enormous clock keeping its own private time.
+      - page: 5
+        chapter: "Chapter 2: The Gardener"
+        text: >
+          The gardener introduced himself as Tobias and explained that he had
+          wound the garden's central spring himself, forty years earlier, and
+          that it would not need winding again for another sixty. He warned
+          Mira never to touch the spring housing beneath the sundial.
+      - page: 9
+        chapter: "Chapter 3: The Second Gate"
+        text: >
+          Deep behind the roses, Mira discovered a second, smaller gate she
+          had not noticed before. Unlike the first, it was not rusted at all
+          — its brass gleamed as if it had been opened, and shut again,
+          only moments ago.
+
+cases:
+  - id: gate-mechanism
+    document: clockwork_garden
+    query: How did Mira open the garden gate?
+    expected_chunk_ordinals: [0]
+    reference_answer: >
+      She pressed her palm to the gate's center plate, which caused its
+      gear-shaped hinges to turn on their own and grind the gate open.
+    current_page: 2
+
+  - id: gardener-warning
+    document: clockwork_garden
+    query: What did Tobias warn Mira not to do?
+    expected_chunk_ordinals: [2]
+    reference_answer: >
+      He warned her never to touch the spring housing beneath the sundial.
+    current_page: 5
+
+  - id: second-gate-read-range
+    document: clockwork_garden
+    query: Is there more than one gate into the garden?
+    expected_chunk_ordinals: [3]
+    reference_answer: >
+      Yes — a second, smaller gate hidden behind the roses, its brass
+      unrusted as if recently opened.
+    current_page: 9
