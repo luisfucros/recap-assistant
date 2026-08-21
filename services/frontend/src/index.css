@@ -1,0 +1,15 @@
+/* Tailwind v4, CSS-first config: no tailwind.config.js. This file is the one
+   place the app's visual language (color, radius, focus ring) is defined —
+   components consume it via utility classes, never inline styles. */
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply bg-stone-50 text-stone-900 antialiased;
+  }
+
+  /* A single consistent focus ring app-wide, instead of each browser's default. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-indigo-500;
+  }
+}
