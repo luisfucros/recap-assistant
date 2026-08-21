@@ -1,0 +1,108 @@
+# Root pyproject.toml — uv workspace root for the recap monorepo.
+#
+# This root is a *virtual* project (no [build-system]): it is never built or
+# published. Its job is to (1) own the shared dev tooling in the [dependency-groups]
+# dev group, (2) hold the shared tool config (ruff, pytest, coverage) inherited by
+# every workspace member, and (3) declare the uv workspace. Runtime dependencies
+# live in each member's own pyproject (libs/shared, services/api, services/ingestion).
+#
+# Dev-tool versions are pinned one minor behind the latest release, on a settled
+# patch, to stay mature but maintained. Re-verify before bumping.
+
+[project]
+name = "recap"
+version = "0.0.0"
+description = "Personalized Agentic RAG reading companion — monorepo root (dev tooling + workspace)."
+requires-python = ">=3.13,<3.14"
+# The root itself has no runtime deps; services/libs declare their own.
+dependencies = []
+
+# Shared dev tooling for the whole workspace (PEP 735 dependency group).
+# Installed into the single workspace venv by `uv sync`.
+[dependency-groups]
+dev = [
+    "ruff==0.15.18",
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "pytest-cov==7.0.0",
+    "pip-audit==2.9.0",
+]
+
+[tool.uv]
+# Virtual root: don't try to build/install this project as a package.
+package = false
+
+[tool.uv.workspace]
+members = ["libs/shared", "services/api", "services/ingestion"]
+
+[tool.uv.sources]
+# The two services depend on the shared library as a workspace member.
+shared = { workspace = true }
+
+# --------------------------------------------------------------------------- #
+# Ruff — lint + format (shared config for the whole workspace)                 #
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["libs", "services"]
+
+[tool.ruff.lint]
+# Pragmatic baseline; type-hint rules (ANN) enforce the required-annotations
+# convention (type hints on all signatures) without the noisiest checks.
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort (import sorting — mirrors the settings.json hook)
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear
+    "C4",        # flake8-comprehensions
+    "SIM",       # flake8-simplify
+    "ASYNC",     # flake8-async (we are async throughout)
+    "ANN",       # flake8-annotations (type hints)
+    "RUF",       # ruff-specific
+]
+ignore = [
+    "ANN401",    # allow explicit typing.Any where deliberate
+    "E501",      # line length handled by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may skip annotations and use assert-heavy style.
+"**/tests/**" = ["ANN"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["shared"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------- #
+# Pytest — three-tier markers (unit / integration / functional)               #
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["libs", "services"]
+python_files = ["test_*.py"]
+markers = [
+    "unit: no I/O, no DB, no network — all deps mocked (< 2s total)",
+    "integration: real infra (Postgres/Qdrant/Redis/MinIO); external APIs mocked",
+    "functional: full HTTP-level tests against the app; external APIs mocked",
+]
+
+# --------------------------------------------------------------------------- #
+# Coverage — target service/utility modules                                    #
+# --------------------------------------------------------------------------- #
+[tool.coverage.run]
+branch = true
+source = ["libs", "services"]
+omit = ["**/tests/**", "**/__init__.py"]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",  # protocol/stub bodies
+]
