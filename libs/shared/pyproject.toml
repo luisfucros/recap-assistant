@@ -1,108 +1,71 @@
-# Root pyproject.toml — uv workspace root for the recap monorepo.
+# libs/shared — code imported by BOTH services (api, ingestion).
 #
-# This root is a *virtual* project (no [build-system]): it is never built or
-# published. Its job is to (1) own the shared dev tooling in the [dependency-groups]
-# dev group, (2) hold the shared tool config (ruff, pytest, coverage) inherited by
-# every workspace member, and (3) declare the uv workspace. Runtime dependencies
-# live in each member's own pyproject (libs/shared, services/api, services/ingestion).
+# Declares only this library's own runtime dependencies. Dev tooling (ruff,
+# pytest, ...) is inherited from the workspace root, not re-declared here.
 #
-# Dev-tool versions are pinned one minor behind the latest release, on a settled
-# patch, to stay mature but maintained. Re-verify before bumping.
+# Version policy (see the dependency conventions): exact-pinned, recent-but-not-
+# newest — one minor behind the latest release on a settled patch, never a
+# brand-new major or a fresh `.0`. Heavy, optional local-inference deps
+# (torch, sentence-transformers) live in the `local` extra so the default sync
+# and the hosted images stay light.
 
 [project]
-name = "recap"
+name = "shared"
 version = "0.0.0"
-description = "Personalized Agentic RAG reading companion — monorepo root (dev tooling + workspace)."
+description = "Shared library for Recap: models, db, repositories, providers, observability, prompt, ingestion_core."
 requires-python = ">=3.13,<3.14"
-# The root itself has no runtime deps; services/libs declare their own.
-dependencies = []
-
-# Shared dev tooling for the whole workspace (PEP 735 dependency group).
-# Installed into the single workspace venv by `uv sync`.
-[dependency-groups]
-dev = [
-    "ruff==0.15.18",
-    "pytest==9.0.3",
-    "pytest-asyncio==1.3.0",
-    "pytest-cov==7.0.0",
-    "pip-audit==2.9.0",
+dependencies = [
+    # Data validation / settings
+    "pydantic==2.12.5",
+    "pydantic-settings==2.14.2",  # 2.14.2 fixes GHSA-4xgf-cpjx-pc3j
+    # Relational: SQLAlchemy 2.0 async + Postgres driver + migrations
+    "sqlalchemy[asyncio]==2.0.50",
+    "asyncpg==0.31.0",
+    "alembic==1.18.4",
+    # Vector store, cache/broker client, HTTP, retries
+    "qdrant-client==1.17.1",
+    "redis==5.2.1",          # ceiling supported by celery/kombu (kombu[redis] caps redis<=5.2.1); redis-py 6/7/8 are unsupported by the task queue
+    "httpx==0.28.1",
+    "tenacity==9.1.3",
+    # Structured logging
+    "loguru==0.7.3",
+    # In-repo prompt store (YAML)
+    "pyyaml==6.0.3",
+    # Document ingestion: PDF parsing (pure-Python; text + page + metadata) and
+    # language detection. pypdf pinned to 6.15.0 (latest) rather than one minor
+    # behind: 6.13.3 carries six known CVEs (PYSEC-2026-3610/3611/3612/3613/
+    # 3655/3656) and 6.15.0 is the lowest version fixing all of them.
+    "pypdf==6.15.0",
+    "lingua-language-detector==2.1.1",
+    # Observability: metrics always-on, tracing optional
+    "prometheus-client==0.24.1",
+    "langfuse==4.12.0",
+    # Object storage (MinIO local / AWS S3 prod) via the S3 API
+    "aioboto3==15.4.0",
+    # Embedding, vision, and transcription provider SDKs (LLM chat models live
+    # in the API service, on LangChain). The `openai` client also drives the
+    # Ollama-compatible endpoint for local vision (chat completions) — Ollama
+    # has no transcription endpoint, so local speech-to-text stays on the
+    # `local` extra's HuggingFace pipeline instead.
+    "openai==2.45.0",  # floor required by langchain-openai (api service)
+    "voyageai==0.4.0",
+    # Password hashing (argon2), shared so the bootstrap-admin data migration
+    # (which runs in the shared-only `migrate` image) hashes identically to the
+    # API service's AuthService rather than duplicating the hasher config.
+    "pwdlib[argon2]==0.2.1",
 ]
 
-[tool.uv]
-# Virtual root: don't try to build/install this project as a package.
-package = false
-
-[tool.uv.workspace]
-members = ["libs/shared", "services/api", "services/ingestion"]
-
-[tool.uv.sources]
-# The two services depend on the shared library as a workspace member.
-shared = { workspace = true }
-
-# --------------------------------------------------------------------------- #
-# Ruff — lint + format (shared config for the whole workspace)                 #
-# --------------------------------------------------------------------------- #
-[tool.ruff]
-target-version = "py313"
-line-length = 100
-src = ["libs", "services"]
-
-[tool.ruff.lint]
-# Pragmatic baseline; type-hint rules (ANN) enforce the required-annotations
-# convention (type hints on all signatures) without the noisiest checks.
-select = [
-    "E", "W",    # pycodestyle
-    "F",         # pyflakes
-    "I",         # isort (import sorting — mirrors the settings.json hook)
-    "UP",        # pyupgrade
-    "B",         # flake8-bugbear
-    "C4",        # flake8-comprehensions
-    "SIM",       # flake8-simplify
-    "ASYNC",     # flake8-async (we are async throughout)
-    "ANN",       # flake8-annotations (type hints)
-    "RUF",       # ruff-specific
-]
-ignore = [
-    "ANN401",    # allow explicit typing.Any where deliberate
-    "E501",      # line length handled by the formatter
+[project.optional-dependencies]
+# Local, fully-offline embeddings. Heavy (pulls torch); installed only when the
+# HuggingFace embedder is actually used: `uv sync --extra local`.
+local = [
+    "sentence-transformers==5.5.1",
+    "torch==2.12.1",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# Tests may skip annotations and use assert-heavy style.
-"**/tests/**" = ["ANN"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.ruff.lint.isort]
-known-first-party = ["shared"]
-
-[tool.ruff.format]
-docstring-code-format = true
-
-# --------------------------------------------------------------------------- #
-# Pytest — three-tier markers (unit / integration / functional)               #
-# --------------------------------------------------------------------------- #
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-addopts = "-ra --strict-markers --strict-config"
-testpaths = ["libs", "services"]
-python_files = ["test_*.py"]
-markers = [
-    "unit: no I/O, no DB, no network — all deps mocked (< 2s total)",
-    "integration: real infra (Postgres/Qdrant/Redis/MinIO); external APIs mocked",
-    "functional: full HTTP-level tests against the app; external APIs mocked",
-]
-
-# --------------------------------------------------------------------------- #
-# Coverage — target service/utility modules                                    #
-# --------------------------------------------------------------------------- #
-[tool.coverage.run]
-branch = true
-source = ["libs", "services"]
-omit = ["**/tests/**", "**/__init__.py"]
-
-[tool.coverage.report]
-skip_empty = true
-exclude_also = [
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "\\.\\.\\.",  # protocol/stub bodies
-]
+[tool.hatch.build.targets.wheel]
+packages = ["shared"]
