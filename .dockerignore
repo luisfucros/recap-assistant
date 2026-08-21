@@ -1,0 +1,29 @@
+# Keep the Docker build context small and secret-free. Images COPY only the
+# manifests + the source they need, but this is belt-and-suspenders.
+
+# Version control
+.git
+.gitignore
+
+# Python environments & caches
+.venv
+**/__pycache__
+**/*.py[cod]
+.ruff_cache
+.pytest_cache
+**/.mypy_cache
+
+# Tests are not needed in runtime images
+**/tests
+
+# Local env & secrets — never bake into an image
+.env
+.env.*
+!.env.example
+
+# Frontend build artifacts
+**/node_modules
+**/dist
+
+# OS cruft
+**/.DS_Store
