@@ -1,0 +1,315 @@
+name: recap
+
+# Local development stack. Copy `.env.example` to `.env` first.
+#
+#   cp .env.example .env && docker compose up --build
+#
+# Startup ordering: `migrate` runs `alembic upgrade head` to completion, then the
+# app services start (they gate on it via service_completed_successfully). No
+# service migrates on its own. The `frontend` service is added with the frontend
+# task; `langfuse` tracing is optional (the app no-ops without it).
+
+# Anchor: app services (api/ingestion/beat/migrate) share build context + env.
+x-app-env: &app-env
+  env_file:
+    - .env
+
+services:
+  # --- Schema migration (one-shot; the single schema writer) ----------------
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/migrate.Dockerfile
+    <<: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot: create the LangGraph checkpoint tables (the agent's durable
+  # short-term memory). Uses the API image because it owns psycopg + langgraph
+  # (the shared-only `migrate` image can't). Runs like `alembic upgrade head` —
+  # once, after the relational migrate, never per-replica on startup.
+  checkpointer-setup:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    <<: *app-env
+    restart: "no"
+    command: ["python", "-m", "api.checkpointer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # --- Assistant / API service ---------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    <<: *app-env
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      checkpointer-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./services/api/api
+          target: /app/services/api/api
+        - action: sync+restart
+          path: ./libs/shared/shared
+          target: /app/libs/shared/shared
+        - action: rebuild
+          path: ./uv.lock
+
+  # --- Ingestion pipeline: Celery worker ------------------------------------
+  ingestion:
+    build:
+      context: .
+      dockerfile: services/ingestion/Dockerfile
+    <<: *app-env
+    restart: unless-stopped
+    # concurrency=1: local embeddings load a full model copy per prefork child,
+    # so extra children multiply memory for little throughput gain. Raise it only
+    # when using a hosted embedder (cheap, network-bound) or a bigger box.
+    command:
+      ["celery", "-A", "ingestion.celery_app:app", "worker", "--loglevel=INFO", "--concurrency=1"]
+    # Persist the downloaded HuggingFace model across container recreations so a
+    # local embedder isn't re-downloaded on every rebuild. HF_HOME points the
+    # cache at the mounted volume (the `app` user's home is /home/app).
+    environment:
+      HF_HOME: /home/app/.cache/huggingface
+    volumes:
+      - hf_cache:/home/app/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./services/ingestion/ingestion
+          target: /app/services/ingestion/ingestion
+        - action: sync+restart
+          path: ./libs/shared/shared
+          target: /app/libs/shared/shared
+        - action: rebuild
+          path: ./uv.lock
+
+  # --- Ingestion pipeline: Celery beat (outbox relay) — MUST be single instance
+  ingestion-beat:
+    build:
+      context: .
+      dockerfile: services/ingestion/Dockerfile
+    <<: *app-env
+    restart: unless-stopped
+    # --schedule points at a writable path: the container runs as non-root and
+    # /app (WORKDIR) is root-owned, so beat can't write its schedule file there.
+    command: ["celery", "-A", "ingestion.celery_app:app", "beat", "--loglevel=INFO", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # --- PostgreSQL (source of truth + outbox) --------------------------------
+  postgres:
+    image: postgres:17.10
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-recap}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-recap}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # --- Adminer (lightweight DB admin UI) ------------------------------------
+  adminer:
+    image: adminer:5.3.0
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Qdrant (vector DB) ---------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.17.1
+    restart: unless-stopped
+    ports:
+      - "6333:6333"  # REST/HTTP
+      - "6334:6334"  # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # --- Redis (Celery broker + cache + sessions) -----------------------------
+  redis:
+    image: redis:7.4.9
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- MinIO (S3-compatible object storage) ---------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # web console
+    volumes:
+      - minio_data:/data
+
+  # --- MinIO bucket bootstrap (one-shot; mirrors `migrate`) -----------------
+  # MinIO starts empty, so the first upload would fail with NoSuchBucket. This
+  # one-shot container waits for MinIO, creates the configured bucket
+  # idempotently, and exits; api/ingestion gate on it via
+  # service_completed_successfully. Production targets real S3, whose bucket is
+  # provisioned by infrastructure — hence bootstrap lives here, not in the app.
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    <<: *app-env
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local "$${S3_ENDPOINT_URL}" "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          echo "waiting for minio..."; sleep 1;
+        done
+        mc mb --ignore-existing "local/$${S3_BUCKET}"
+        echo "bucket $${S3_BUCKET} ready"
+
+  # --- Prometheus (metrics scrape) ------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.5.5
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+
+  # --- Grafana (dashboards) -------------------------------------------------
+  grafana:
+    image: grafana/grafana:12.4.5
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  # --- node-exporter (host/process metrics) ---------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+
+  # --- Frontend (React SPA served by nginx; proxies /api → api) -------------
+  frontend:
+    build:
+      context: .
+      dockerfile: services/frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+    develop:
+      watch:
+        - action: rebuild
+          path: ./services/frontend/src
+        - action: rebuild
+          path: ./services/frontend/package.json
+
+  # --- Ollama (optional: fully-local LLM + vision) — `docker compose --profile ollama up`
+  # Also serves local image description when VISION_PROVIDER=ollama: pull a vision
+  # model into the container first, e.g. `docker compose exec ollama ollama pull llava`.
+  ollama:
+    image: ollama/ollama:0.30.11
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  ollama_data:
+  hf_cache:  # cached HuggingFace models for the local embedder

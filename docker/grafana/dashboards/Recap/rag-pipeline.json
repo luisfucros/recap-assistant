@@ -1,0 +1,118 @@
+{
+  "id": null,
+  "uid": "recap-rag-pipeline",
+  "title": "Recap — RAG Pipeline",
+  "description": "Retrieval/embedding/LLM/tool/web-search operation timings and LLM token usage inside the agent turn (recap_operation_seconds, recap_llm_tokens_total).",
+  "tags": ["recap"],
+  "timezone": "",
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Operation call rate, by kind and outcome",
+      "description": "sum(rate(recap_operation_seconds_count[5m])) by (operation, outcome) — retrieval/embedding/llm/tool/web_search.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(recap_operation_seconds_count{job=\"api\"}[5m])) by (operation, outcome)",
+          "legendFormat": "{{operation}} ({{outcome}})"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Operation latency (p95), by kind",
+      "description": "histogram_quantile(0.95, ...) over recap_operation_seconds, grouped by operation.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(recap_operation_seconds_bucket{job=\"api\"}[5m])) by (le, operation))",
+          "legendFormat": "{{operation}} p95"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Operation error rate, by kind",
+      "description": "sum(rate(recap_operation_seconds_count{outcome=\"error\"}[5m])) by (operation) — a spike here points at a failing provider/tool.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(recap_operation_seconds_count{job=\"api\", outcome=\"error\"}[5m])) by (operation)",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "LLM token usage rate, by kind",
+      "description": "sum(rate(recap_llm_tokens_total[5m])) by (kind) — prompt vs. completion tokens/sec, aggregate (not per-user; see the separate per-user spend metric task).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(recap_llm_tokens_total{job=\"api\"}[5m])) by (kind)",
+          "legendFormat": "{{kind}} tokens/s"
+        }
+      ]
+    }
+  ],
+  "templating": { "list": [] },
+  "annotations": { "list": [] }
+}

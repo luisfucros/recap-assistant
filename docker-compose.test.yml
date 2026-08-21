@@ -1,0 +1,53 @@
+name: recap-test
+
+# Throwaway infrastructure for the integration & functional test tiers.
+#
+#   docker compose -f docker-compose.test.yml up -d      # start test infra
+#   uv run pytest -m "integration or functional"         # run the tiers
+#   docker compose -f docker-compose.test.yml down -v     # tear down
+#
+# Deliberately isolated from the dev stack (docker-compose.yml): a distinct
+# project name (`recap-test`), offset host ports, and **ephemeral** storage
+# (tmpfs / no named volumes) so every `up` starts clean and nothing collides
+# with a running dev stack. The test conftest connects to these ports and skips
+# the integration/functional tiers cleanly when they are not reachable.
+
+services:
+  # --- PostgreSQL (tmpfs: fast, wiped on restart) ---------------------------
+  test-postgres:
+    image: postgres:17.10
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: recap_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d recap_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # --- Qdrant ---------------------------------------------------------------
+  test-qdrant:
+    image: qdrant/qdrant:v1.17.1
+    ports:
+      - "6335:6333"  # REST/HTTP
+      - "6336:6334"  # gRPC
+
+  # --- MinIO (S3-compatible object storage) ---------------------------------
+  test-minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9002:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

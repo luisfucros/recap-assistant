@@ -1,0 +1,12 @@
+# Load any dashboard JSON dropped into /var/lib/grafana/dashboards.
+apiVersion: 1
+
+providers:
+  - name: recap
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

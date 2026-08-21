@@ -1,0 +1,89 @@
+# Prometheus alerting rules for Recap (M8 hardening). No Alertmanager is wired
+# up (no notification channel is configured for this project) — these rules
+# still evaluate and surface as firing alerts in Prometheus's own UI/API
+# (`/alerts`), which is what the M8 acceptance criterion ("an induced error
+# trips an alert") checks against. Wiring a receiver (email/Slack/PagerDuty) is
+# a deploy-time decision, added when this runs somewhere with someone on call.
+groups:
+  # --- Availability: is the process even reachable? ------------------------ #
+  - name: recap-availability
+    rules:
+      - alert: RecapAPIDown
+        expr: up{job="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Recap API is unreachable"
+          description: >-
+            Prometheus has failed to scrape {{ $labels.job }} at
+            {{ $labels.instance }} for 2 minutes — the API is likely down.
+
+      - alert: RecapIngestionWorkerDown
+        expr: up{job="ingestion"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Recap ingestion worker is unreachable"
+          description: >-
+            Prometheus has failed to scrape the ingestion worker's metrics
+            endpoint at {{ $labels.instance }} for 2 minutes — uploads will
+            stop being processed until it recovers.
+
+  # --- API SLOs -------------------------------------------------------------- #
+  - name: recap-api-slo
+    rules:
+      - alert: RecapAPIHighErrorRate
+        # Guarded by a minimum-traffic floor so a handful of requests during a
+        # quiet period can't swing the ratio to 100% and page on noise.
+        expr: >-
+          (
+            sum(rate(http_requests_total{job="api", status="5xx"}[5m]))
+            /
+            sum(rate(http_requests_total{job="api"}[5m]))
+          ) > 0.05
+          and
+          sum(rate(http_requests_total{job="api"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recap API 5xx rate above 5%"
+          description: >-
+            {{ $value | humanizePercentage }} of API requests returned 5xx
+            over the last 5 minutes.
+
+      - alert: RecapAPILatencySLOBreach
+        # http_request_duration_highr_seconds carries no `handler` label (a
+        # deliberately coarse, high-resolution-bucket metric — see
+        # prometheus_fastapi_instrumentator's `default()`), which is exactly
+        # the aggregate view an overall latency SLO wants.
+        expr: >-
+          histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket{job="api"}[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recap API p95 latency above 2s"
+          description: >-
+            p95 request latency has been above the 2s SLO for 5 minutes
+            (current: {{ $value | humanizeDuration }}).
+
+  # --- Ingestion pipeline ---------------------------------------------------- #
+  - name: recap-ingestion
+    rules:
+      - alert: RecapIngestionQueueBacklog
+        # recap_outbox_pending is refreshed every outbox-relay tick (a few
+        # seconds) and doubles as ingestion queue depth (see
+        # shared.observability.metrics).
+        expr: recap_outbox_pending{job="ingestion"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recap ingestion outbox backlog above 100 events"
+          description: >-
+            {{ $value }} outbox events have been waiting for at least 10
+            minutes — check ingestion worker throughput/health, or scale
+            worker count.
