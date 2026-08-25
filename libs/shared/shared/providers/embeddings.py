@@ -16,6 +16,8 @@ import asyncio
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
+from loguru import logger
+
 from shared.core.config import Settings
 from shared.providers._config import require_secret, resolve_ollama_api_key
 from shared.providers.errors import ProviderConfigError
@@ -133,6 +135,13 @@ class HuggingFaceEmbedder:
 
     ``encode`` is CPU/GPU-bound and synchronous, so it is offloaded to a thread to
     avoid blocking the event loop. Requires the optional local dependencies.
+
+    We slice ``texts`` ourselves and call ``encode`` once per slice. Passing the
+    whole document with ``encode(..., batch_size=N)`` still tokenizes and holds
+    every chunk (and the concatenated output array) at once — the library's
+    internal mini-batch only bounds the forward pass, not peak memory, so a
+    large PDF OOMs the worker. Hosted embedders already slice at this layer;
+    local must too.
     """
 
     def __init__(
@@ -163,14 +172,35 @@ class HuggingFaceEmbedder:
         self, texts: Sequence[str], *, batch_size: int | None = None
     ) -> list[list[float]]:
         size = batch_size or self._batch
-        vectors = await asyncio.to_thread(
-            self._model.encode,
-            list(texts),
-            batch_size=size,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-        )
-        return [vec.tolist() for vec in vectors]
+        n = len(texts)
+        if n == 0:
+            return []
+        total = (n + size - 1) // size
+        logger.info("embeddings.encode: started ({} texts, {} batches of {})", n, total, size)
+        out: list[list[float]] = []
+        for index, start in enumerate(range(0, n, size), start=1):
+            batch = list(texts[start : start + size])
+            logger.info("embeddings.encode: batch {}/{} ({} texts)", index, total, len(batch))
+            try:
+                # One encode() per our slice: the model never sees more than ``size``
+                # texts, so tokenizer + output tensors stay bounded. ``batch_size``
+                # on encode is the slice length so it does not sub-batch further.
+                vectors = await asyncio.to_thread(
+                    self._model.encode,
+                    batch,
+                    batch_size=len(batch),
+                    normalize_embeddings=True,
+                    convert_to_numpy=True,
+                )
+            except Exception:
+                logger.opt(exception=True).error(
+                    "embeddings.encode: batch {}/{} failed", index, total
+                )
+                raise
+            out.extend(vec.tolist() for vec in vectors)
+            logger.debug("embeddings.encode: batch {}/{} done ({} vectors)", index, total, len(out))
+        logger.info("embeddings.encode: finished ({} vectors)", len(out))
+        return out
 
 
 def build_embedder(settings: Settings) -> OpenAIEmbedder | VoyageEmbedder | HuggingFaceEmbedder:

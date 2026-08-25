@@ -16,7 +16,7 @@ from shared.providers import (
     build_storage_provider,
     build_web_search_provider,
 )
-from shared.providers.embeddings import OpenAIEmbedder, VoyageEmbedder
+from shared.providers.embeddings import HuggingFaceEmbedder, OpenAIEmbedder, VoyageEmbedder
 from shared.providers.storage import S3StorageProvider
 from shared.providers.websearch import BraveSearchProvider, TavilySearchProvider
 
@@ -107,6 +107,41 @@ async def test_openai_embedder_batches_calls() -> None:
     vectors = await emb.embed(["a", "bb", "ccc", "dddd", "e"])
 
     assert client.embeddings.create.await_count == 3
+    assert vectors == [[1.0], [2.0], [3.0], [4.0], [1.0]]
+
+
+@pytest.mark.unit
+async def test_huggingface_embedder_slices_before_encode() -> None:
+    """Local encode() must see our batches, not the full list + library batch_size.
+
+    sentence-transformers' ``batch_size`` only mini-batches the forward pass; it
+    still materializes every input (and the concatenated output) at once.
+    """
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 1
+
+        def encode(
+            self,
+            texts: list[str],
+            *,
+            batch_size: int,
+            normalize_embeddings: bool,
+            convert_to_numpy: bool,
+        ) -> list[SimpleNamespace]:
+            self.calls.append(list(texts))
+            assert batch_size == len(texts)
+            return [SimpleNamespace(tolist=lambda t=t: [float(len(t))]) for t in texts]
+
+    model = _FakeModel()
+    emb = HuggingFaceEmbedder(model="unused", batch_size=2, model_obj=model)
+    vectors = await emb.embed(["a", "bb", "ccc", "dddd", "e"])
+
+    assert model.calls == [["a", "bb"], ["ccc", "dddd"], ["e"]]
     assert vectors == [[1.0], [2.0], [3.0], [4.0], [1.0]]
 
 

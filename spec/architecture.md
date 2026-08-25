@@ -75,7 +75,8 @@ Embeddings, storage, and web search sit behind `Protocol` interfaces in `libs/sh
 class Embedder(Protocol):
     @property
     def dim(self) -> int: ...
-    # embeds in internal batches of `batch_size` to bound memory (local HF models OOM otherwise)
+    # slices `texts` into `batch_size` calls (hosted API or local `encode`);
+    # sentence-transformers' own batch_size does not bound peak memory
     async def embed(self, texts: list[str], *, batch_size: int | None = None) -> list[list[float]]: ...
 
 class StorageProvider(Protocol):        # S3 API — MinIO local, AWS S3 prod

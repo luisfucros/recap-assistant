@@ -51,12 +51,16 @@ async def run_reembed(
         title, author, language = document.title, document.author, document.language
 
     texts = [chunk.text for chunk in chunks]
-    vectors = (
-        await resources.embedder.embed(texts, batch_size=settings.embed_batch_size) if texts else []
+    batch_size = settings.embed_batch_size
+    embed_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    log.info(
+        "reembed: embedding {} chunks in {} batches (batch_size={})",
+        len(texts),
+        embed_batches,
+        batch_size,
     )
-    log.debug(
-        "reembed: re-embedded {} chunks (batch_size={})", len(texts), settings.embed_batch_size
-    )
+    vectors = await resources.embedder.embed(texts, batch_size=batch_size) if texts else []
+    log.info("reembed: re-embedded {} chunks (batch_size={})", len(texts), batch_size)
 
     store = ChunkVectorStore(
         resources.qdrant,

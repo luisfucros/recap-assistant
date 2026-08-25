@@ -90,13 +90,17 @@ async def run_ingestion(
         chunk_rows = _build_chunk_rows(chunk_datas, document_id=document_id, user_id=user_id)
     log.debug("ingestion: chunked into {} chunks", len(chunk_rows))
     texts = [row.text for row in chunk_rows]
+    batch_size = settings.embed_batch_size
+    embed_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    log.info(
+        "ingestion: embedding {} chunks in {} batches (batch_size={})",
+        len(texts),
+        embed_batches,
+        batch_size,
+    )
     with tracer.span("embed", chunks=len(texts)):
-        vectors = (
-            await resources.embedder.embed(texts, batch_size=settings.embed_batch_size)
-            if texts
-            else []
-        )
-    log.info("ingestion: embedded {} chunks (batch_size={})", len(texts), settings.embed_batch_size)
+        vectors = await resources.embedder.embed(texts, batch_size=batch_size) if texts else []
+    log.info("ingestion: embedded {} chunks (batch_size={})", len(texts), batch_size)
 
     # 3) Upsert vectors BEFORE the terminal DB commit. Clearing first makes the
     #    upsert idempotent across retries/partial runs.
