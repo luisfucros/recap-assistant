@@ -217,5 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+.claude/
+.cursor/
 node_modules/
 .DS_Store
