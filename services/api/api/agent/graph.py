@@ -201,14 +201,69 @@ class MultimodalNotConfiguredError(RuntimeError):
     """
 
 
-_OFF_TOPIC_FALLBACK = (
-    "I'm your reading companion, so I can only help with the books and documents "
-    "you've added and your reading of them."
-)
-_INJECTION_REASON = (
-    "I can't follow instructions that try to change how I work. I'm here to help "
-    "with your reading — ask me about your books or documents."
-)
+# Canned refusals for paths that never reach the LLM (injection short-circuit,
+# empty-reason fallback). Keyed by the same human-readable language names the
+# generate prompt uses so a blocked turn is in the reader's language (FR-16.4).
+_EN = "English"
+_BLOCK_COPY: dict[str, dict[str, str]] = {
+    "off_topic": {
+        "English": (
+            "I'm your reading companion, so I can only help with the books and "
+            "documents you've added and your reading of them."
+        ),
+        "Spanish": (
+            "Soy tu compañero de lectura, así que solo puedo ayudarte con los "
+            "libros y documentos que hayas añadido y con tu lectura de ellos."
+        ),
+        "German": (
+            "Ich bin dein Leseassistent und kann dir nur bei den Büchern und "
+            "Dokumenten helfen, die du hinzugefügt hast, und bei deiner Lektüre."
+        ),
+        "French": (
+            "Je suis ton compagnon de lecture : je ne peux t'aider qu'avec les "
+            "livres et documents que tu as ajoutés et avec ta lecture."
+        ),
+        "Italian": (
+            "Sono il tuo compagno di lettura, quindi posso aiutarti solo con i "
+            "libri e i documenti che hai aggiunto e con la tua lettura."
+        ),
+    },
+    "injection": {
+        "English": (
+            "I can't follow instructions that try to change how I work. I'm here "
+            "to help with your reading — ask me about your books or documents."
+        ),
+        "Spanish": (
+            "No puedo seguir instrucciones que intenten cambiar cómo trabajo. "
+            "Estoy aquí para ayudarte con tu lectura: pregúntame por tus libros "
+            "o documentos."
+        ),
+        "German": (
+            "Ich kann keine Anweisungen befolgen, die versuchen, meine "
+            "Arbeitsweise zu ändern. Ich bin da, um dir bei deiner Lektüre zu "
+            "helfen — frag mich nach deinen Büchern oder Dokumenten."
+        ),
+        "French": (
+            "Je ne peux pas suivre des instructions qui tentent de changer ma "
+            "façon de travailler. Je suis là pour t'aider dans ta lecture — "
+            "pose-moi des questions sur tes livres ou documents."
+        ),
+        "Italian": (
+            "Non posso seguire istruzioni che cercano di cambiare il mio "
+            "funzionamento. Sono qui per aiutarti con la lettura: chiedimi dei "
+            "tuoi libri o documenti."
+        ),
+    },
+}
+
+
+def _localized_block_reason(kind: str, language: str) -> str:
+    """User-facing canned refusal in the reader's answer language (FR-16.4).
+
+    Unknown languages fall back to English rather than failing a blocked turn.
+    """
+    copies = _BLOCK_COPY[kind]
+    return copies.get(language, copies[_EN])
 
 
 @dataclass(slots=True)
@@ -354,7 +409,8 @@ def build_agent_graph(
         display_name: The reader's name, rendered into the ``generate`` prompt.
         answer_language: The human-readable language the answer is written in
             (the reader's ``preferred_language``), rendered into the ``generate``
-            prompt so the reply is in their language even for a foreign document.
+            and ``guardrail_in`` prompts so both the reply and any polite
+            refusal are in their language even for a foreign document.
         checkpointer: Persists per-conversation state across turns; ``None`` yields
             a stateless graph (each turn starts fresh).
         tracer: Optional Langfuse tracer; each LLM/tool node opens a child span
@@ -541,9 +597,15 @@ def build_agent_graph(
     async def guardrail_in(state: AgentState) -> dict:
         """Topical/safety gate. An injection flag blocks without an LLM call."""
         if state.get("injection_detected"):
-            return {"on_topic": False, "safe": False, "block_reason": _INJECTION_REASON}
-        prompt_obj = prompts.get("guardrail_in", "v2")
-        prompt = prompt_obj.render(message=_latest_user_text(state))
+            return {
+                "on_topic": False,
+                "safe": False,
+                "block_reason": _localized_block_reason("injection", answer_language),
+            }
+        prompt_obj = prompts.get("guardrail_in", "v3")
+        prompt = prompt_obj.render(
+            message=_latest_user_text(state), answer_language=answer_language
+        )
         with (
             tracer.span(
                 "guardrail_in",
@@ -564,7 +626,8 @@ def build_agent_graph(
         return {
             "on_topic": decision.on_topic,
             "safe": decision.safe,
-            "block_reason": decision.reason or _OFF_TOPIC_FALLBACK,
+            "block_reason": decision.reason
+            or _localized_block_reason("off_topic", answer_language),
         }
 
     async def load_progress(state: AgentState) -> dict:
@@ -636,7 +699,7 @@ def build_agent_graph(
 
     async def generate(state: AgentState) -> dict:
         """Produce the answer, driving the tool loop when tools are needed."""
-        prompt_obj = prompts.get("generate", "v3")
+        prompt_obj = prompts.get("generate", "v4")
         system = SystemMessage(
             content=prompt_obj.render(display_name=display_name, answer_language=answer_language)
         )

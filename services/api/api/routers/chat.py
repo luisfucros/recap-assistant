@@ -80,8 +80,9 @@ router = APIRouter(tags=["chat"])
 # RFC 6455 private-use range (4000-4999); there's no reserved code for "auth".
 _WS_UNAUTHORIZED = 4401
 
-# Human-readable names for the answer language, rendered into the generate prompt
-# (clearer to the model than the ISO code). One entry per supported language.
+# Human-readable names for the answer language, rendered into the generate and
+# guardrail_in prompts (clearer to the model than the ISO code). One entry per
+# supported language.
 _LANGUAGE_NAMES: dict[Language, str] = {
     Language.EN: "English",
     Language.ES: "Spanish",

@@ -111,10 +111,12 @@ def test_default_store_ships_agent_prompts() -> None:
     for ref in (
         "guardrail_in@v1",
         "guardrail_in@v2",
+        "guardrail_in@v3",
         "planner@v1",
         "generate@v1",
         "generate@v2",
         "generate@v3",
+        "generate@v4",
         "summarize@v1",
         "compaction@v1",
         "spoiler_check@v1",
@@ -165,13 +167,10 @@ def test_generate_v2_instructs_document_id_sourcing() -> None:
 
 
 @pytest.mark.unit
-def test_generate_v3_is_the_latest_and_hides_tool_errors() -> None:
-    # v3 is what the agent graph actually resolves ("generate", "v3" pinned in
-    # graph.py) — guards it staying the shipped/latest version and carrying the
-    # fix for a real bug where a tool's raw "not a valid document id" error —
-    # including the document's label and id it had echoed back — surfaced
-    # verbatim in the streamed answer instead of a plain-language apology.
-    assert get_prompt_registry().get("generate").version == "v3"
+def test_generate_v3_hides_tool_errors() -> None:
+    # Kept resolvable even though v4 is now the latest — v3 is the tool-error
+    # leak fix (a raw "not a valid document id" error, including the document
+    # label and id, used to surface verbatim in the streamed answer).
     rendered = (
         get_prompt_registry()
         .get("generate", "v3")
@@ -185,15 +184,48 @@ def test_generate_v3_is_the_latest_and_hides_tool_errors() -> None:
 
 
 @pytest.mark.unit
-def test_guardrail_in_v2_is_the_latest_and_allows_small_talk() -> None:
-    # v2 is what the agent graph actually resolves ("guardrail_in", "v2" pinned
-    # in graph.py) — guards it staying the shipped/latest version and carrying
-    # the fix for a real bug where a bare greeting or the reader sharing a
-    # personal fact about themselves was misclassified off-topic and refused.
-    assert get_prompt_registry().get("guardrail_in").version == "v2"
+def test_generate_v4_is_the_latest_and_stays_inside_tools() -> None:
+    # v4 is what the agent graph actually resolves ("generate", "v4" pinned in
+    # graph.py) — never suggest workarounds the tools cannot do (copy-paste
+    # document text, recap an attached transcript/image as a book).
+    assert get_prompt_registry().get("generate").version == "v4"
+    rendered = (
+        get_prompt_registry()
+        .get("generate", "v4")
+        .render(display_name="Ada", answer_language="Spanish")
+    )
+    assert "Ada" in rendered
+    assert "Spanish" in rendered
+    assert "never quote that error text" in rendered
+    assert "copy and paste" in rendered
+    assert "Attached audio transcript" in rendered
+    assert "do not invent a workaround" in rendered
+
+
+@pytest.mark.unit
+def test_guardrail_in_v2_allows_small_talk() -> None:
+    # Kept resolvable even though v3 is now the latest — v2 is the small-talk
+    # widening (a bare greeting or a personal fact used to be refused).
     rendered = get_prompt_registry().get("guardrail_in", "v2").render(message="hi, I'm Ada")
     assert "greeting" in rendered
     assert "hi, I'm Ada" in rendered
+
+
+@pytest.mark.unit
+def test_guardrail_in_v3_is_the_latest_and_reasons_in_answer_language() -> None:
+    # v3 is what the agent graph actually resolves ("guardrail_in", "v3" pinned
+    # in graph.py) — the user-facing reason is written in the reader's language
+    # so a blocked turn isn't stuck in English.
+    assert get_prompt_registry().get("guardrail_in").version == "v3"
+    rendered = (
+        get_prompt_registry()
+        .get("guardrail_in", "v3")
+        .render(message="hi, I'm Ada", answer_language="Spanish")
+    )
+    assert "greeting" in rendered
+    assert "hi, I'm Ada" in rendered
+    assert "Spanish" in rendered
+    assert "written in Spanish" in rendered
 
 
 @pytest.mark.unit
