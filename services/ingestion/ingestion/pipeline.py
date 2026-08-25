@@ -179,7 +179,7 @@ async def fail_document(
         document.status = DocumentStatus.FAILED
         document.failure_reason = reason[:_MAX_FAILURE_REASON]
         await session.commit()
-    log.warning("ingestion: marked failed: {}", reason[:200])
+    log.error("ingestion: marked failed: {}", reason[:200])
     record_document_ingested("failed")
 
 

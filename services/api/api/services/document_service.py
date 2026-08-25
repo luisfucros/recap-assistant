@@ -13,6 +13,8 @@ an unknown or unowned id surfaces as 404 (never revealing another user's data).
 
 import uuid
 
+from loguru import logger
+
 from shared.core.enums import Language
 from shared.models.document import Document
 from shared.providers.base import StorageProvider
@@ -47,6 +49,7 @@ class DocumentService:
         await self._storage.delete(document.object_key)
         await documents.delete(document)
         await session.commit()
+        logger.info("document.delete: deleted {}", document_id)
 
     async def update_language(
         self,
@@ -67,5 +70,6 @@ class DocumentService:
         document = await documents.get_or_404(document_id)
         if language is not None:
             document.language = language
+            logger.info("document.update_language: document {} -> {}", document_id, language.value)
         await session.commit()
         return document

@@ -19,6 +19,7 @@ import uuid
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 
+from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +61,9 @@ class UsageService:
             )
         )
         await session.commit()
+        logger.debug(
+            "usage.record_tokens: prompt={} completion={}", prompt_tokens, completion_tokens
+        )
 
     async def record_tool_call(
         self, *, session: AsyncSession, usage: UsageEventRepository, tool_name: str
@@ -69,6 +73,7 @@ class UsageService:
             UsageEvent(user_id=usage.user_id, type=UsageEventType.TOOL_CALL, tool_name=tool_name)
         )
         await session.commit()
+        logger.debug("usage.record_tool_call: {}", tool_name)
 
     async def get_usage(
         self,
@@ -88,6 +93,7 @@ class UsageService:
         cache_key = f"usage:{user_id}:{window_days}"
         cached = await self._redis.get(cache_key)
         if cached is not None:
+            logger.debug("usage.get: cache hit (window_days={})", window_days)
             return UsageSummary.model_validate_json(cached)
 
         window_start = datetime.combine(
@@ -96,6 +102,12 @@ class UsageService:
         window_events = await usage.list_since(window_start)
         summary = self._compute(window_events, window_days=window_days)
         await self._redis.set(cache_key, summary.model_dump_json(), ex=self._ttl)
+        logger.info(
+            "usage.get: computed (window_days={}, total_tokens={}, tool_calls={})",
+            window_days,
+            summary.total_tokens,
+            summary.tool_calls,
+        )
         return summary
 
     @classmethod

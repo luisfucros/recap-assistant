@@ -103,15 +103,15 @@ class AsyncTask(Task):
             return run_on_process_loop(coro)
 
     def before_start(self, task_id: str, args: tuple, kwargs: dict) -> None:
-        logger.bind(task=self.name, task_id=task_id).info("celery task started")
+        logger.bind(task=self.name, task_id=task_id).info("celery.task: started")
 
     def on_success(self, retval: Any, task_id: str, args: tuple, kwargs: dict) -> None:
-        logger.bind(task=self.name, task_id=task_id).info("celery task succeeded")
+        logger.bind(task=self.name, task_id=task_id).info("celery.task: succeeded")
 
     def on_retry(self, exc: Exception, task_id: str, args: tuple, kwargs: dict, einfo: Any) -> None:
-        logger.bind(task=self.name, task_id=task_id).warning("celery task retrying: {}", exc)
+        logger.bind(task=self.name, task_id=task_id).warning("celery.task: retrying: {}", exc)
 
     def on_failure(
         self, exc: Exception, task_id: str, args: tuple, kwargs: dict, einfo: Any
     ) -> None:
-        logger.bind(task=self.name, task_id=task_id).error("celery task failed: {}", exc)
+        logger.bind(task=self.name, task_id=task_id).opt(exception=exc).error("celery.task: failed")

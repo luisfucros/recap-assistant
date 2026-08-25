@@ -25,6 +25,7 @@ import json
 import uuid
 from dataclasses import dataclass
 
+from loguru import logger
 from redis.asyncio import Redis
 
 from shared.core.enums import ScratchpadKind
@@ -129,6 +130,7 @@ class ScratchpadService:
         key = self._key(user_id, conversation_id, turn_id)
         await self._redis.rpush(key, note.to_json())
         await self._redis.expire(key, self._ttl)
+        logger.debug("scratchpad.append: {}", note.kind.value)
 
     async def recall(
         self,
@@ -161,4 +163,6 @@ class ScratchpadService:
         ]
         relevant = [entry for entry in scored if entry[0] > 0]
         relevant.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
-        return plans + [note for _, _, note in relevant[:limit]]
+        recalled = plans + [note for _, _, note in relevant[:limit]]
+        logger.debug("scratchpad.recall: {} notes", len(recalled))
+        return recalled

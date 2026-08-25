@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.core.enums import MessageRole
@@ -71,6 +72,7 @@ class ConversationService:
             Conversation(user_id=conversations.user_id, title=title)
         )
         await session.commit()
+        logger.info("conversation.create: created {}", conversation.id)
         return conversation
 
     async def list_conversations(
@@ -79,6 +81,7 @@ class ConversationService:
         """Return a page of the user's conversations (recent first) and the total."""
         items = await conversations.list_recent(limit=limit, offset=offset)
         total = await conversations.count()
+        logger.debug("conversation.list: {} of {}", len(items), total)
         return items, total
 
     async def list_messages(
@@ -98,6 +101,7 @@ class ConversationService:
         await conversations.get_or_404(conversation_id)
         items = await messages.list_by_conversation(conversation_id, limit=limit, offset=offset)
         total = await messages.count_by_conversation(conversation_id)
+        logger.debug("conversation.list_messages: {} of {}", len(items), total)
         return items, total
 
     async def delete(
@@ -122,6 +126,7 @@ class ConversationService:
             await self._checkpointer.adelete_thread(str(conversation_id))
         await conversations.delete(conversation)
         await session.commit()
+        logger.info("conversation.delete: deleted {}", conversation_id)
 
     async def record_turn(
         self,
@@ -176,6 +181,7 @@ class ConversationService:
             conversation.title = _derive_title(user_text)
         conversation.updated_at = _now()
         await session.commit()
+        logger.info("conversation.record_turn: persisted {}", conversation_id)
         return user_message, assistant_message
 
     async def record_user_message(
@@ -212,6 +218,7 @@ class ConversationService:
             conversation.title = _derive_title(user_text)
         conversation.updated_at = _now()
         await session.commit()
+        logger.info("conversation.record_user_message: persisted {}", conversation_id)
         return user_message
 
     async def record_assistant_reply(
@@ -246,4 +253,5 @@ class ConversationService:
         )
         conversation.updated_at = _now()
         await session.commit()
+        logger.info("conversation.record_assistant_reply: persisted {}", conversation_id)
         return assistant_message

@@ -49,7 +49,10 @@ class RateLimitService:
             if count == 1:
                 await self._redis.expire(key, window_seconds)
         except RedisError:
-            logger.warning("Rate limiter Redis error; failing open for key={}", key)
+            logger.warning("rate_limit.enforce: redis error; failing open")
             return
         if count > limit:
+            logger.info(
+                "rate_limit.enforce: exceeded (limit={}, window_s={})", limit, window_seconds
+            )
             raise RateLimitExceededError()

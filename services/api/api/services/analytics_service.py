@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 
+from loguru import logger
 from redis.asyncio import Redis
 
 from api.schemas import AnalyticsSummary, PagesOnDay
@@ -51,6 +52,7 @@ class AnalyticsService:
         cache_key = f"analytics:{user_id}:{window_days}"
         cached = await self._redis.get(cache_key)
         if cached is not None:
+            logger.debug("analytics.get: cache hit (window_days={})", window_days)
             return AnalyticsSummary.model_validate_json(cached)
 
         window_start = datetime.combine(
@@ -63,6 +65,12 @@ class AnalyticsService:
         }
         summary = self._compute(window_events, status_counts, today=today, window_days=window_days)
         await self._redis.set(cache_key, summary.model_dump_json(), ex=self._ttl)
+        logger.info(
+            "analytics.get: computed (window_days={}, pages_read={}, events={})",
+            window_days,
+            summary.pages_read,
+            len(window_events),
+        )
         return summary
 
     @classmethod

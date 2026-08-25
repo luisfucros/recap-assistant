@@ -78,6 +78,7 @@ async def run_reembed(
     async with resources.sessionmaker() as session:
         document = await DocumentRepository(session, user_id).get(document_id)
         if document is None:
+            log.warning("reembed: document disappeared before embed_model stamp")
             return
         document.embed_model = settings.embedding_model
         await session.commit()

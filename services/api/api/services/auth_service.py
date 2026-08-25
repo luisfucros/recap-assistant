@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import jwt
+from loguru import logger
 from pwdlib import PasswordHash
 
 from shared.core.config import Settings
@@ -121,6 +122,7 @@ class AuthService:
         admin-only user-creation route passes ``True``.
         """
         if await repo.get_by_email(email) is not None:
+            logger.info("auth.register: rejected duplicate")
             raise DuplicateUserError(f"a user with email {email!r} already exists")
         user = User(
             email=email,
@@ -130,15 +132,20 @@ class AuthService:
             spoiler_safe=self._default_spoiler_safe,
             is_admin=is_admin,
         )
-        return await repo.add(user)
+        created = await repo.add(user)
+        logger.info("auth.register: created user {} (is_admin={})", created.id, is_admin)
+        return created
 
     async def authenticate(self, repo: UserRepository, *, email: str, password: str) -> User:
         """Return the user for valid credentials, else ``InvalidCredentialsError``."""
         user = await repo.get_by_email(email)
         if user is None or user.hashed_password is None:
+            logger.info("auth.authenticate: rejected invalid credentials")
             raise InvalidCredentialsError("invalid email or password")
         if not self.verify_password(password, user.hashed_password):
+            logger.info("auth.authenticate: rejected invalid credentials")
             raise InvalidCredentialsError("invalid email or password")
+        logger.info("auth.authenticate: succeeded for user {}", user.id)
         return user
 
     async def authenticate_google(
@@ -159,12 +166,14 @@ class AuthService:
         """
         user = await repo.get_by_google_sub(google_sub)
         if user is not None:
+            logger.info("auth.authenticate_google: existing user {}", user.id)
             return user
         user = await repo.get_by_email(email)
         if user is not None:
             user.google_sub = google_sub
+            logger.info("auth.authenticate_google: linked user {}", user.id)
             return user
-        return await repo.add(
+        created = await repo.add(
             User(
                 email=email,
                 google_sub=google_sub,
@@ -175,10 +184,14 @@ class AuthService:
                 is_admin=False,
             )
         )
+        logger.info("auth.authenticate_google: created user {}", created.id)
+        return created
 
     async def refresh(self, repo: UserRepository, refresh_token: str) -> TokenPair:
         """Validate a refresh token and issue a rotated access + refresh pair."""
         user_id = self.decode_token(refresh_token, expected_type="refresh")
         if await repo.get_by_id(user_id) is None:
+            logger.info("auth.refresh: rejected unknown subject")
             raise InvalidTokenError("token subject is not a known user")
+        logger.info("auth.refresh: rotated tokens for user {}", user_id)
         return self.issue_tokens(user_id)

@@ -60,6 +60,10 @@ async def _relay(resources: IngestionResources) -> int:
         await session.commit()
         # Publish the remaining backlog as the ingestion queue depth.
         set_outbox_pending(await outbox.count_unprocessed())
+    if count:
+        logger.info("outbox.relay: dispatched {} events", count)
+    else:
+        logger.debug("outbox.relay: nothing to consume")
     return count
 
 

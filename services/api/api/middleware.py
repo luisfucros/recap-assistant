@@ -70,7 +70,8 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             logger.info("http.request.start", method=request.method, path=request.url.path)
             response = await call_next(request)
             duration_ms = int((time.monotonic() - started) * 1000)
-            logger.info(
+            finish = logger.error if response.status_code >= 500 else logger.info
+            finish(
                 "http.request.finish",
                 method=request.method,
                 path=request.url.path,

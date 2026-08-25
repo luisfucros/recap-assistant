@@ -119,7 +119,7 @@ class MultimodalNormalizer:
         except Exception:
             # Losing the archival copy must not fail the turn — the derived text is
             # what the agent reasons over. Log and continue without a key.
-            logger.warning("failed to archive chat media {}; continuing on derived text", key)
+            logger.warning("multimodal.archive: failed for {}; continuing on derived text", key)
             return None
 
     async def _derive_text(self, part: MediaPart) -> str:
@@ -135,12 +135,20 @@ class MultimodalNormalizer:
             logger.info(
                 "multimodal: transcription started ({} bytes, {})", len(part.data), part.mime_type
             )
-            text = await self._transcriber.transcribe(part.data, mime_type=part.mime_type)
+            try:
+                text = await self._transcriber.transcribe(part.data, mime_type=part.mime_type)
+            except Exception:
+                logger.opt(exception=True).error("multimodal: transcription failed")
+                raise
             logger.info("multimodal: transcription succeeded ({} chars)", len(text))
             return text
         logger.info(
             "multimodal: image description started ({} bytes, {})", len(part.data), part.mime_type
         )
-        text = await self._describer.describe(part.data, mime_type=part.mime_type)
+        try:
+            text = await self._describer.describe(part.data, mime_type=part.mime_type)
+        except Exception:
+            logger.opt(exception=True).error("multimodal: image description failed")
+            raise
         logger.info("multimodal: image description succeeded ({} chars)", len(text))
         return text

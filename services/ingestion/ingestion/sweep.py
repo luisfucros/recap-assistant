@@ -76,11 +76,15 @@ async def sweep_stuck_documents(
 ) -> int:
     """Re-enqueue every stuck document found; return how many were dispatched."""
     stuck = await find_stuck_documents(resources, now=now, stuck_after_seconds=stuck_after_seconds)
+    if not stuck:
+        logger.debug("ingest.sweep: no stuck documents")
+        return 0
     for document_id, user_id in stuck:
         logger.bind(document_id=str(document_id), user_id=str(user_id)).warning(
-            "re-enqueuing stuck document past {}s", stuck_after_seconds
+            "ingest.sweep: re-enqueuing stuck document past {}s", stuck_after_seconds
         )
         dispatch(str(document_id), str(user_id))
+    logger.info("ingest.sweep: re-enqueued {} documents", len(stuck))
     return len(stuck)
 
 

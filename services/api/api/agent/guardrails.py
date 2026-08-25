@@ -21,6 +21,8 @@ import html
 import re
 from dataclasses import dataclass
 
+from loguru import logger
+
 from shared.core.logging import redact_text
 
 # Heuristic prompt-injection signals. Deliberately high-precision (a match is a
@@ -65,8 +67,11 @@ class GuardrailService:
         ``injection_detected`` flag lets the graph short-circuit or harden the
         prompt before doing so.
         """
+        injection = self.detect_injection(text)
+        if injection:
+            logger.info("guardrail.screen: injection detected")
         return InputScreen(
-            injection_detected=self.detect_injection(text),
+            injection_detected=injection,
             redacted_text=self.redact_for_llm(text),
         )
 

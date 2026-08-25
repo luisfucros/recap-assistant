@@ -79,6 +79,7 @@ class MemoryService:
                 document and page range, so they're saved via :meth:`write_summary`.
         """
         if type is MemoryType.SUMMARY:
+            logger.info("memory.write: rejected summary type")
             raise InvalidInputError("Summary memories must be saved via write_summary().")
         await self._vectors.ensure_collection()
         vector = (await self._embedder.embed([content]))[0]
@@ -140,6 +141,7 @@ class MemoryService:
                 be at least 1 and no greater than ``page_end``).
         """
         if page_start < 1 or page_end < page_start:
+            logger.info("memory.write_summary: rejected inverted range {}-{}", page_start, page_end)
             raise InvalidInputError("page_start must be >= 1 and <= page_end.")
         memory = await memories.add(
             LongTermMemory(

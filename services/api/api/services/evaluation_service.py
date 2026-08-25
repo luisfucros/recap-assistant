@@ -24,6 +24,7 @@ from uuid import UUID
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.agent.context import build_tool_context
@@ -124,6 +125,7 @@ class EvaluationService:
                 run is persisted for this — there is nothing to have attempted).
         """
         dataset = load_dataset(dataset_name)
+        logger.info("evaluation.run: started dataset {}@{}", dataset.name, dataset.version)
         prompt_ref = self._prompts.get("generate").ref
         llm_model = model_id_for(self._settings, "default")
 
@@ -145,6 +147,9 @@ class EvaluationService:
                 )
                 status, error = EvaluationRunStatus.COMPLETED, None
             except Exception as exc:
+                logger.opt(exception=exc).error(
+                    "evaluation.run: failed dataset {}@{}", dataset.name, dataset.version
+                )
                 await session.rollback()
                 case_results, summary = [], _summarize([])
                 status, error = EvaluationRunStatus.FAILED, str(exc)[:2048]
@@ -165,6 +170,11 @@ class EvaluationService:
         )
         await runs.add(run)
         await session.commit()
+        logger.info(
+            "evaluation.run: persisted status={} cases={}",
+            status.value,
+            summary.get("cases"),
+        )
         return run
 
     async def _run_dataset(

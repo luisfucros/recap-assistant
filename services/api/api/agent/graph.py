@@ -459,7 +459,7 @@ def build_agent_graph(
                 user_id=user_id, conversation_id=conversation_id, turn_id=turn_id, note=note
             )
         except Exception:
-            logger.debug("scratchpad append failed; continuing without it")
+            logger.warning("scratchpad.append: failed; continuing without it")
 
     async def _recall(query: str) -> list[ScratchpadNote]:
         """Recall the turn's relevant scratchpad slices, best-effort (else empty)."""
@@ -470,7 +470,7 @@ def build_agent_graph(
                 user_id=user_id, conversation_id=conversation_id, turn_id=turn_id, query=query
             )
         except Exception:
-            logger.debug("scratchpad recall failed; continuing without it")
+            logger.warning("scratchpad.recall: failed; continuing without it")
             return []
 
     async def _track_tokens(prompt_tokens: int, completion_tokens: int) -> None:
@@ -493,7 +493,7 @@ def build_agent_graph(
                 completion_tokens=completion_tokens,
             )
         except Exception:
-            logger.debug("usage token tracking failed; continuing without it")
+            logger.warning("usage.record_tokens: failed; continuing without it")
 
     async def _track_tool_call(tool_name: str) -> None:
         """Persist one per-user tool-call count, best-effort (NFR-13)."""
@@ -502,7 +502,7 @@ def build_agent_graph(
                 session=tool_context.session, usage=tool_context.usage, tool_name=tool_name
             )
         except Exception:
-            logger.debug("usage tool-call tracking failed; continuing without it")
+            logger.warning("usage.record_tool_call: failed; continuing without it")
 
     async def normalize_input(state: AgentState) -> dict:
         """Fold attachments to text, then screen: flag injection, redact in place.
@@ -730,7 +730,7 @@ def build_agent_graph(
                     content=decision.content,
                 )
         except Exception:
-            logger.debug("memory extraction failed; continuing without it")
+            logger.warning("extract_memory: failed; continuing without it")
         return {}
 
     async def persist_memory(state: AgentState) -> dict:

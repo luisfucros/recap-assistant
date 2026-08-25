@@ -102,6 +102,7 @@ class IngestionService:
         # Fast path: skip the storage write when we already hold this content.
         existing = await documents.get_by_content_sha256(content_sha256)
         if existing is not None:
+            logger.info("ingestion.upload: rejected duplicate {}", existing.id)
             raise DuplicateDocumentError(existing.id)
 
         key = object_key(user_id, content_sha256, document_format.value)
@@ -131,6 +132,9 @@ class IngestionService:
             await session.rollback()
             winner = await documents.get_by_content_sha256(content_sha256)
             if winner is None:  # pragma: no cover — constraint fired, row must exist
+                logger.opt(exception=True).error(
+                    "ingestion.upload: unique constraint with no winner"
+                )
                 raise
             logger.info(
                 "ingestion.upload: lost duplicate-upload race for user {}, existing document {}",
@@ -164,6 +168,7 @@ class IngestionService:
         """
         document = await documents.get_or_404(document_id)
         if document.status is not DocumentStatus.FAILED:
+            logger.info("ingestion.retry: rejected (status={})", document.status.value)
             raise DocumentNotFailedError(document.id)
         document.status = DocumentStatus.PENDING
         document.failure_reason = None
