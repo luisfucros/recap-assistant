@@ -21,7 +21,9 @@ Each stage has one job:
   place with its safe, text-only form before any hosted LLM (or guardrail) sees it.
 * **guardrail_in** — the LLM topical/safety gate (a structured
   :class:`~api.agent.schemas.GuardrailDecision`); an injection flag short-circuits
-  to a block without spending an LLM call.
+  to a block without spending an LLM call. The judge sees the current message
+  plus a short prior user/assistant slice (not tool payloads) so follow-ups
+  stay classifiable without the full checkpoint.
 * **load_progress** — inject the reader's reading-list context so the planner and
   answer are position-aware.
 * **load_memories** — inject the reader's recently-saved personal memories
@@ -30,7 +32,9 @@ Each stage has one job:
   ``query_long_term_memory`` (a greeting, an aside about the reader). Mirrors
   ``load_progress``.
 * **plan** — a cheap-tier :class:`~api.agent.schemas.PlannerDecision`: does the
-  turn need tools at all?
+  turn need tools at all? Sees the current message plus the same short prior
+  user/assistant slice as ``guardrail_in``, so follow-ups can still plan
+  retrieval instead of skipping tools.
 * **generate** — the answer model. When tools are needed it is bound to the six
   tools and drives the tool loop; its final tool-free message is the streamed
   answer. This is the only node whose output is free-form prose.
@@ -308,6 +312,73 @@ def _latest_user_text(state: AgentState) -> str:
         if isinstance(message, HumanMessage):
             return message.content if isinstance(message.content, str) else str(message.content)
     return ""
+
+
+# Bounded backdrop for ``guardrail_in``: enough turns to resolve anaphora, not
+# the full checkpoint (tool payloads and per-turn injected system notes stay out).
+_GUARDRAIL_HISTORY_TURNS = 4
+_GUARDRAIL_SNIPPET_CHARS = 400
+_INJECTED_SYSTEM_PREFIXES = (
+    "Reading list for this user:",
+    "What we remember about ",
+    "Nothing has been saved about ",
+)
+_NO_PRIOR_TURNS = "(none — first turn)"
+
+
+def _plain_text(message: AnyMessage) -> str:
+    """Strip a message down to non-empty text; non-strings become ``str``."""
+    content = message.content
+    if not isinstance(content, str):
+        content = str(content) if content else ""
+    return content.strip()
+
+
+def _clip_snippet(text: str) -> str:
+    """Cap one history line so a long prior answer cannot bloat the judge."""
+    if len(text) <= _GUARDRAIL_SNIPPET_CHARS:
+        return text
+    return text[:_GUARDRAIL_SNIPPET_CHARS].rstrip() + "…"
+
+
+def _guardrail_history_line(message: AnyMessage) -> tuple[str, str] | None:
+    """Map a checkpoint message to a (role, text) line, or skip it.
+
+    Human/AI prose is kept. Tool results are dropped (they carry retrieved
+    passages). Per-turn ``load_progress``/``load_memories`` system notes are
+    dropped; a compaction seed (any other system message) is kept so a
+    rewritten thread still has backdrop.
+    """
+    text = _plain_text(message)
+    if not text:
+        return None
+    if isinstance(message, HumanMessage):
+        return ("Reader", text)
+    if isinstance(message, AIMessage):
+        return ("Assistant", text)
+    if isinstance(message, SystemMessage) and not text.startswith(_INJECTED_SYSTEM_PREFIXES):
+        return ("Summary", text)
+    return None
+
+
+def _recent_chat_context(
+    messages: list[AnyMessage], *, max_turns: int = _GUARDRAIL_HISTORY_TURNS
+) -> str:
+    """Format a short prior-turn slice for the input guardrail and planner.
+
+    Drops the current human utterance (rendered separately as ``$message``) and
+    keeps at most ``max_turns`` earlier reader turns plus the assistant/summary
+    lines among them. Shared so both cheap-tier nodes resolve anaphora without
+    the full checkpoint or tool payloads.
+    """
+    lines = [pair for message in messages if (pair := _guardrail_history_line(message))]
+    if lines and lines[-1][0] == "Reader":
+        lines = lines[:-1]
+    if not lines:
+        return _NO_PRIOR_TURNS
+    reader_idxs = [i for i, (role, _) in enumerate(lines) if role == "Reader"]
+    start = reader_idxs[-max_turns] if len(reader_idxs) >= max_turns else 0
+    return "\n".join(f"{role}: {_clip_snippet(text)}" for role, text in lines[start:])
 
 
 def _document_id_from_tool_calls(message: AnyMessage) -> str | None:
@@ -602,9 +673,11 @@ def build_agent_graph(
                 "safe": False,
                 "block_reason": _localized_block_reason("injection", answer_language),
             }
-        prompt_obj = prompts.get("guardrail_in", "v3")
+        prompt_obj = prompts.get("guardrail_in", "v4")
         prompt = prompt_obj.render(
-            message=_latest_user_text(state), answer_language=answer_language
+            message=_latest_user_text(state),
+            answer_language=answer_language,
+            conversation_context=_recent_chat_context(state["messages"]),
         )
         with (
             tracer.span(
@@ -668,8 +741,12 @@ def build_agent_graph(
     async def plan(state: AgentState) -> dict:
         """Classify complexity and whether the turn needs tools (cheap tier)."""
         tool_lines = "\n".join(f"- {t.name}: {t.description}" for t in tools)
-        prompt_obj = prompts.get("planner", "v1")
-        prompt = prompt_obj.render(message=_latest_user_text(state), tools=tool_lines)
+        prompt_obj = prompts.get("planner", "v2")
+        prompt = prompt_obj.render(
+            message=_latest_user_text(state),
+            tools=tool_lines,
+            conversation_context=_recent_chat_context(state["messages"]),
+        )
         with (
             tracer.span(
                 "plan", prompt=prompt_obj.ref, provider=models.provider, model=models.cheap_model

@@ -131,7 +131,7 @@
 ### FR-10 Guardrails
 
 - FR-10.1 **Input guardrails**: reject or safely handle prompt-injection attempts and strip/redact PII before sending to hosted providers.
-- FR-10.2 **Topical relevance guardrail**: the assistant is a reading companion — off-topic requests (unrelated to the user's documents/reading) are politely declined and redirected.
+- FR-10.2 **Topical relevance guardrail**: the assistant is a reading companion — off-topic requests (unrelated to the user's documents/reading) are politely declined and redirected. The judge sees the current message plus a short prior user/assistant slice so follow-ups in the same conversation stay classifiable.
 - FR-10.3 **Appropriateness/safety guardrail**: inappropriate, unsafe, or abusive requests are blocked with a standard refusal.
 - FR-10.4 **Output guardrail**: sanitize model output before it reaches the frontend to prevent prompt-injection-driven XSS.
 - FR-10.5 Guardrail decisions are traced (FR-11) with the reason, and a blocked request returns a clear, non-leaky message.

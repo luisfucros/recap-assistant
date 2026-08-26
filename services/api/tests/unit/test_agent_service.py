@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from api.agent.context import ToolContext
-from api.agent.graph import AgentModels
+from api.agent.graph import _NO_PRIOR_TURNS, AgentModels, _recent_chat_context
 from api.agent.schemas import (
     Complexity,
     GuardrailDecision,
@@ -27,7 +27,7 @@ from api.services.agent_service import AgentService
 from api.services.compaction_service import CompactionService
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
@@ -114,6 +114,18 @@ class _AllMessagesCapturingModel(BaseChatModel):
 
     def bind_tools(self, tools, **kwargs):
         return self
+
+
+class _RecordingPlanner:
+    """A planner that records the prompt it was given (to prove session context)."""
+
+    def __init__(self, decision: PlannerDecision) -> None:
+        self._decision = decision
+        self.prompts: list[Any] = []
+
+    async def ainvoke(self, prompt: Any, *args: Any, **kwargs: Any) -> PlannerDecision:
+        self.prompts.append(prompt)
+        return self._decision
 
 
 class _RecordingGuardrail:
@@ -327,6 +339,7 @@ def _models(
     reason: str = "",
     needs_tools: bool = False,
     guardrail_judge: Any = None,
+    planner: Any = None,
     spoiler_judge: Any = None,
     memory_classifier: Any = None,
     answer_fallbacks: list | None = None,
@@ -338,7 +351,7 @@ def _models(
     guard = guardrail_judge or RunnableLambda(
         lambda _p: GuardrailDecision(on_topic=on_topic, safe=safe, reason=reason)
     )
-    planner = RunnableLambda(
+    planner = planner or RunnableLambda(
         lambda _p: PlannerDecision(
             complexity=Complexity.STANDARD if needs_tools else Complexity.SIMPLE,
             needs_tools=needs_tools,
@@ -732,12 +745,12 @@ async def test_llm_spans_carry_prompt_provider_and_model_metadata() -> None:
     )
     opened = dict(tracer.opened)
     assert opened["guardrail_in"] == {
-        "prompt": "guardrail_in@v3",
+        "prompt": "guardrail_in@v4",
         "provider": "anthropic",
         "model": "claude-haiku-4-5-20251001",
     }
     assert opened["plan"] == {
-        "prompt": "planner@v1",
+        "prompt": "planner@v2",
         "provider": "anthropic",
         "model": "claude-haiku-4-5-20251001",
     }
@@ -874,6 +887,7 @@ async def test_answer_language_reaches_the_guardrail_prompt() -> None:
         answer_language="Spanish",
     )
     assert recorder.prompts and "Spanish" in recorder.prompts[0]
+    assert "(none — first turn)" in recorder.prompts[0]
 
 
 async def test_injection_block_reason_is_in_the_answer_language() -> None:
@@ -904,6 +918,116 @@ async def test_empty_guardrail_reason_falls_back_in_the_answer_language() -> Non
     )
     assert turn.blocked is True
     assert "compañero de lectura" in turn.answer
+
+
+def test_recent_chat_context_drops_tools_injected_system_and_current_human() -> None:
+    # The judge gets a cheap backdrop: prior reader/assistant prose, not tool
+    # payloads (retrieved text) or per-turn reading-list notes, and not the
+    # current utterance (that is $message).
+    ctx = _recent_chat_context(
+        [
+            SystemMessage(content="Reading list for this user:\n- reading: 1"),
+            HumanMessage(content="who narrates?"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "retrieve_chunks", "args": {}, "id": "1"}],
+            ),
+            ToolMessage(content="secret passage text", tool_call_id="1"),
+            AIMessage(content="Odysseus."),
+            HumanMessage(content="what about him?"),
+        ]
+    )
+    assert "secret passage text" not in ctx
+    assert "Reading list" not in ctx
+    assert "what about him?" not in ctx
+    assert "who narrates?" in ctx
+    assert "Odysseus." in ctx
+
+
+def test_recent_chat_context_first_turn_has_no_prior() -> None:
+    assert _recent_chat_context([HumanMessage(content="hi")]) == _NO_PRIOR_TURNS
+
+
+def test_recent_chat_context_keeps_compaction_seed_when_history_was_rewritten() -> None:
+    # After compaction the checkpoint is a summary system message plus the new
+    # human turn — that seed is the only backdrop the judge can use.
+    ctx = _recent_chat_context(
+        [
+            SystemMessage(content="Prior chat was about The Odyssey."),
+            HumanMessage(content="and after that?"),
+        ]
+    )
+    assert "The Odyssey" in ctx
+    assert "and after that?" not in ctx
+
+
+def test_recent_chat_context_caps_to_the_last_reader_turns() -> None:
+    messages: list = []
+    for i in range(6):
+        messages.append(HumanMessage(content=f"q{i}"))
+        messages.append(AIMessage(content=f"a{i}"))
+    messages.append(HumanMessage(content="and after that?"))
+    ctx = _recent_chat_context(messages, max_turns=4)
+    assert "q1" not in ctx
+    assert "q2" in ctx and "q5" in ctx
+    assert "and after that?" not in ctx
+
+
+async def test_guardrail_prompt_includes_prior_turn_on_a_follow_up() -> None:
+    # A follow-up is judged against the checkpointed user/assistant text from
+    # the same conversation, not in isolation.
+    recorder = _RecordingGuardrail(GuardrailDecision(on_topic=True, safe=True, reason=""))
+    service = AgentService(
+        _models(answer_model=_AllMessagesCapturingModel(), guardrail_judge=recorder),
+        checkpointer=MemorySaver(),
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="who is the narrator of the Odyssey?",
+        conversation_id="hist-1",
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="what about him?",
+        conversation_id="hist-1",
+    )
+    assert "(none — first turn)" in recorder.prompts[0]
+    follow_up = recorder.prompts[-1]
+    assert "who is the narrator of the Odyssey?" in follow_up
+    assert "Assistant: ok" in follow_up
+    assert "what about him?" in follow_up
+
+
+async def test_planner_prompt_includes_prior_turn_on_a_follow_up() -> None:
+    # A follow-up must be planned against the same short session slice, or the
+    # planner will treat "what about him?" as a tool-free clarification.
+    recorder = _RecordingPlanner(
+        PlannerDecision(complexity=Complexity.SIMPLE, needs_tools=False, tool_plan=[])
+    )
+    service = AgentService(
+        _models(answer_model=_AllMessagesCapturingModel(), planner=recorder),
+        checkpointer=MemorySaver(),
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="who is the narrator of the Odyssey?",
+        conversation_id="hist-plan",
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="what about him?",
+        conversation_id="hist-plan",
+    )
+    assert "(none — first turn)" in recorder.prompts[0]
+    follow_up = recorder.prompts[-1]
+    assert "who is the narrator of the Odyssey?" in follow_up
+    assert "Assistant: ok" in follow_up
+    assert "what about him?" in follow_up
+    assert "retrieve_chunks" in follow_up
 
 
 # --- personalization: load_memories / extract_memory (FR-7.9) --------------- #

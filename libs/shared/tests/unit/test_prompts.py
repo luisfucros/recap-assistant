@@ -112,7 +112,9 @@ def test_default_store_ships_agent_prompts() -> None:
         "guardrail_in@v1",
         "guardrail_in@v2",
         "guardrail_in@v3",
+        "guardrail_in@v4",
         "planner@v1",
+        "planner@v2",
         "generate@v1",
         "generate@v2",
         "generate@v3",
@@ -212,11 +214,9 @@ def test_guardrail_in_v2_allows_small_talk() -> None:
 
 
 @pytest.mark.unit
-def test_guardrail_in_v3_is_the_latest_and_reasons_in_answer_language() -> None:
-    # v3 is what the agent graph actually resolves ("guardrail_in", "v3" pinned
-    # in graph.py) — the user-facing reason is written in the reader's language
-    # so a blocked turn isn't stuck in English.
-    assert get_prompt_registry().get("guardrail_in").version == "v3"
+def test_guardrail_in_v3_reasons_in_answer_language() -> None:
+    # Kept resolvable even though v4 is now the latest — v3 is the
+    # answer-language instruction for the user-facing reason.
     rendered = (
         get_prompt_registry()
         .get("guardrail_in", "v3")
@@ -224,8 +224,47 @@ def test_guardrail_in_v3_is_the_latest_and_reasons_in_answer_language() -> None:
     )
     assert "greeting" in rendered
     assert "hi, I'm Ada" in rendered
-    assert "Spanish" in rendered
     assert "written in Spanish" in rendered
+
+
+@pytest.mark.unit
+def test_guardrail_in_v4_is_the_latest_and_takes_conversation_context() -> None:
+    # v4 is what the agent graph actually resolves ("guardrail_in", "v4" pinned
+    # in graph.py) — a short prior-turn slice so follow-ups are judged in context.
+    assert get_prompt_registry().get("guardrail_in").version == "v4"
+    rendered = (
+        get_prompt_registry()
+        .get("guardrail_in", "v4")
+        .render(
+            message="what about him?",
+            answer_language="Spanish",
+            conversation_context="Reader: who narrates the Odyssey?\nAssistant: Odysseus.",
+        )
+    )
+    assert "what about him?" in rendered
+    assert "Odysseus." in rendered
+    assert "written in Spanish" in rendered
+    assert "follow-up" in rendered
+
+
+@pytest.mark.unit
+def test_planner_v2_is_the_latest_and_takes_conversation_context() -> None:
+    # v2 is what the agent graph actually resolves ("planner", "v2" pinned in
+    # graph.py) — a short prior-turn slice so follow-ups can still plan tools.
+    assert get_prompt_registry().get("planner").version == "v2"
+    rendered = (
+        get_prompt_registry()
+        .get("planner", "v2")
+        .render(
+            message="what about him?",
+            tools="- retrieve_chunks: look up passages",
+            conversation_context="Reader: who narrates the Odyssey?\nAssistant: Odysseus.",
+        )
+    )
+    assert "what about him?" in rendered
+    assert "retrieve_chunks" in rendered
+    assert "Odysseus." in rendered
+    assert "follow-up" in rendered
 
 
 @pytest.mark.unit
