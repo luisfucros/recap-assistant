@@ -124,6 +124,7 @@ def test_default_store_ships_agent_prompts() -> None:
         "spoiler_check@v1",
         "evaluation_judge@v1",
         "memory_classify@v1",
+        "memory_classify@v2",
     ):
         assert registry.resolve(ref).ref == ref
 
@@ -271,6 +272,26 @@ def test_planner_v2_is_the_latest_and_takes_conversation_context() -> None:
 def test_memory_classify_prompt_renders_with_its_variables() -> None:
     rendered = get_prompt_registry().get("memory_classify", "v1").render(message="I'm 34")
     assert "I'm 34" in rendered
+
+
+@pytest.mark.unit
+def test_memory_classify_v2_is_the_latest_and_rejects_session_specific_notes() -> None:
+    # v2 is what the agent graph actually resolves ("memory_classify", "v2"
+    # pinned in graph.py) — prior-turn slice plus a ban on saving the current
+    # book or this sitting's recap range as a preference.
+    assert get_prompt_registry().get("memory_classify").version == "v2"
+    rendered = (
+        get_prompt_registry()
+        .get("memory_classify", "v2")
+        .render(
+            message="summarize the next 10 pages",
+            conversation_context="Reader: I'm reading 2001.\nAssistant: Noted.",
+        )
+    )
+    assert "summarize the next 10 pages" in rendered
+    assert "I'm reading 2001." in rendered
+    assert "Do *not* save" in rendered
+    assert "this-turn recap" in rendered
 
 
 @pytest.mark.unit

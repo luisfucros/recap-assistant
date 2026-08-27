@@ -75,8 +75,10 @@ class MemoryClassification(BaseModel):
         "'preference', 'fact', 'concept', 'habit', or 'faq'.",
     )
     salient: bool = Field(
-        description="True only if this is worth remembering long-term; false for "
-        "ephemeral chit-chat that should not be persisted.",
+        description="True only if this is a general, lasting trait about the "
+        "reader (identity, tastes, how they usually read) worth remembering "
+        "across sessions and books; false for ephemeral chit-chat, the current "
+        "book/progress, or this-turn recap/range instructions.",
     )
     page_start: int | None = Field(
         default=None,
@@ -90,10 +92,11 @@ class MemoryClassification(BaseModel):
     )
     content: str | None = Field(
         default=None,
-        description="A concise, third-person statement of the fact/preference/habit "
-        "to remember (e.g. 'Is 34 years old and works as a teacher.'). Required "
-        "when salient and type is not 'summary' — a salient verdict with no "
-        "content is treated as not worth saving. Null when not salient.",
+        description="A concise, third-person statement of a general lasting "
+        "fact/preference/habit (e.g. 'Prefers sci-fi novels.') — never the "
+        "current title, chapter, or page span. Required when salient and type "
+        "is not 'summary'; a salient verdict with no content is not saved. "
+        "Null when not salient.",
     )
 
 

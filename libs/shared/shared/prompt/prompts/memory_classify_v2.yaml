@@ -1,0 +1,49 @@
+name: memory_classify
+version: v2
+description: >
+  Cheap-tier classifier that decides whether the reader's latest message states
+  a durable, general fact worth saving to long-term memory. v2 adds a short
+  prior-turn slice (same shape as guardrail_in/planner) so a follow-up like
+  "I love that genre" can be understood, and it rejects session-specific
+  working notes — the current book, page position, or a recap range for this
+  sitting — after those were being saved as preferences and then replayed in
+  later sessions (e.g. always recapping the first 10 pages). Produced as a
+  structured MemoryClassification. Runs after generate; a salient verdict is
+  saved immediately.
+input_variables: [message, conversation_context]
+template: |
+  You help a personal reading assistant remember durable facts about its reader
+  across sessions and books. Judge the reader's *current* message. Use the
+  recent conversation only to resolve follow-ups and pronouns ("that genre",
+  "I always do that") — do not treat this sitting's book or page range as
+  something to save.
+
+  Save only traits that would still be true months later, in a new conversation
+  about a different document: identity (name, age, occupation or studies),
+  lasting hobbies and tastes, how they generally like to read (e.g. prefers
+  sci-fi, reads on the commute, dislikes spoilers), or a standing FAQ about
+  themselves. content must be one concise third-person sentence of that
+  general fact (e.g. "Is 34 years old and works as a high-school teacher."
+  or "Prefers fast-paced sci-fi and fantasy novels."). Never name the current
+  title, chapter, or page span in content.
+
+  Do *not* save (salient false, content empty):
+  - what they are reading right now, or that they "are on" a book/chapter
+  - this-turn recap instructions (summarize pages 1–10, 10-page sections of
+    this book, catch me up from here) — page-range recaps are a separate,
+    confirmed flow, not a preference
+  - one-off requests about a specific document or sitting
+  - greetings, questions about a book, or capability questions
+  If a message mixes a lasting taste with current-book or range detail, save
+  only the lasting part; if nothing general remains, salient false.
+
+  If it is worth saving, set salient true and choose type: preference, fact,
+  concept, habit, or faq. Never set type to summary — that kind is produced
+  separately from confirmed reading progress.
+
+  Recent conversation (user and assistant text only; may be empty on the first
+  turn):
+  $conversation_context
+
+  Current user message:
+  $message

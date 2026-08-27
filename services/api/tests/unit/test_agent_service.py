@@ -116,6 +116,18 @@ class _AllMessagesCapturingModel(BaseChatModel):
         return self
 
 
+class _RecordingClassifier:
+    """A memory classifier that records the prompt it was given."""
+
+    def __init__(self, decision: MemoryClassification) -> None:
+        self._decision = decision
+        self.prompts: list[Any] = []
+
+    async def ainvoke(self, prompt: Any, *args: Any, **kwargs: Any) -> MemoryClassification:
+        self.prompts.append(prompt)
+        return self._decision
+
+
 class _RecordingPlanner:
     """A planner that records the prompt it was given (to prove session context)."""
 
@@ -946,6 +958,27 @@ def test_recent_chat_context_drops_tools_injected_system_and_current_human() -> 
 
 def test_recent_chat_context_first_turn_has_no_prior() -> None:
     assert _recent_chat_context([HumanMessage(content="hi")]) == _NO_PRIOR_TURNS
+    assert (
+        _recent_chat_context([HumanMessage(content="hi"), AIMessage(content="Hello.")])
+        == _NO_PRIOR_TURNS
+    )
+
+
+def test_recent_chat_context_drops_this_turns_answer_after_generate() -> None:
+    # extract_memory runs after generate, so the latest assistant line is this
+    # turn's reply — not prior context.
+    ctx = _recent_chat_context(
+        [
+            HumanMessage(content="I mostly read sci-fi"),
+            AIMessage(content="Noted."),
+            HumanMessage(content="I love that genre"),
+            AIMessage(content="ok"),
+        ]
+    )
+    assert "I mostly read sci-fi" in ctx
+    assert "Noted." in ctx
+    assert "I love that genre" not in ctx
+    assert "Assistant: ok" not in ctx
 
 
 def test_recent_chat_context_keeps_compaction_seed_when_history_was_rewritten() -> None:
@@ -1162,6 +1195,33 @@ async def test_extract_memory_is_best_effort_on_classifier_failure() -> None:
 
     assert turn.blocked is False
     assert turn.answer == "Hi."
+
+
+async def test_extract_memory_prompt_includes_prior_turn_on_a_follow_up() -> None:
+    # Follow-ups like "I love that genre" need the prior turn; the classifier
+    # must still see the current utterance separately.
+    recorder = _RecordingClassifier(MemoryClassification(type=MemoryType.FACT, salient=False))
+    service = AgentService(
+        _models(answer_model=_AllMessagesCapturingModel(), memory_classifier=recorder),
+        checkpointer=MemorySaver(),
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="I mostly read sci-fi",
+        conversation_id="hist-mem",
+    )
+    await service.run(
+        tool_context=_context(),
+        display_name="Ada",
+        message="I love that genre",
+        conversation_id="hist-mem",
+    )
+    assert "(none — first turn)" in recorder.prompts[0]
+    follow_up = recorder.prompts[-1]
+    assert "I mostly read sci-fi" in follow_up
+    assert "I love that genre" in follow_up
+    assert "this-turn recap" in follow_up
 
 
 # --- multimodal input (FR-19 Phase B) ---------------------------------------- #
