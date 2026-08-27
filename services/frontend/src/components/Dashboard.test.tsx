@@ -11,6 +11,7 @@ const USER = {
   display_name: "Ada",
   preferred_language: "en",
   spoiler_safe: true,
+  is_admin: false,
 };
 
 const EMPTY_LIBRARY = { items: [], total: 0, page: 1, page_size: 50 };
@@ -55,6 +56,24 @@ describe("Dashboard", () => {
     renderDashboard();
 
     expect(await screen.findByText(/welcome back, ada/i)).toBeInTheDocument();
+  });
+
+  it("hides the Admin section for a regular reader", async () => {
+    mockFetch({ "GET /users/me": () => json(USER), ...BASE_ROUTES });
+    renderDashboard();
+    expect(await screen.findByText(/welcome back, ada/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^admin$/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the Admin section for an admin", async () => {
+    mockFetch({
+      "GET /users/me": () => json({ ...USER, is_admin: true }),
+      ...BASE_ROUTES,
+      "GET /evaluations/datasets": () => json({ items: [] }),
+      "GET /evaluations": () => json({ items: [], total: 0, page: 1, page_size: 50 }),
+    });
+    renderDashboard();
+    expect(await screen.findByRole("button", { name: /^admin$/i })).toBeInTheDocument();
   });
 
   it("persists a language change via PATCH and reflects it", async () => {

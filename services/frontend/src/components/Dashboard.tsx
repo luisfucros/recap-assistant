@@ -12,6 +12,7 @@ import { clsx } from "clsx";
 import { LANGUAGES, LANGUAGE_LABELS, type Language } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { Analytics } from "./Analytics";
+import { Admin } from "./Admin";
 import { Chat } from "./Chat";
 import { Library } from "./Library";
 import { Memory } from "./Memory";
@@ -19,9 +20,16 @@ import { Reading } from "./Reading";
 import { Recommendations } from "./Recommendations";
 import { Checkbox, FieldLabel, Select } from "./ui";
 
-type SectionKey = "chat" | "library" | "reading" | "memory" | "recommendations" | "analytics";
+type SectionKey =
+  | "chat"
+  | "library"
+  | "reading"
+  | "memory"
+  | "recommendations"
+  | "analytics"
+  | "admin";
 
-const SECTIONS: { key: SectionKey; label: string }[] = [
+const READER_SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "chat", label: "Chat" },
   { key: "library", label: "Library" },
   { key: "reading", label: "Reading" },
@@ -36,6 +44,10 @@ export function Dashboard(): React.JSX.Element {
   const [section, setSection] = useState<SectionKey>("chat");
 
   if (!user) return <></>; // guarded by App; keeps the type narrow
+
+  const sections = user.is_admin
+    ? [...READER_SECTIONS, { key: "admin" as const, label: "Admin" }]
+    : READER_SECTIONS;
 
   const onLanguageChange = async (language: Language) => {
     setSaving(true);
@@ -67,7 +79,7 @@ export function Dashboard(): React.JSX.Element {
           aria-label="Sections"
           className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:overflow-visible"
         >
-          {SECTIONS.map((s) => (
+          {sections.map((s) => (
             <button
               key={s.key}
               type="button"
@@ -140,6 +152,11 @@ export function Dashboard(): React.JSX.Element {
         <div className={section === "analytics" ? "" : "hidden"}>
           <Analytics />
         </div>
+        {user.is_admin && (
+          <div className={section === "admin" ? "" : "hidden"}>
+            <Admin />
+          </div>
+        )}
       </main>
     </div>
   );

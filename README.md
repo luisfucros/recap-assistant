@@ -68,6 +68,7 @@ Optional local LLM: `docker compose --profile ollama up`.
 ```bash
 uv run uvicorn api.app:create_app --factory --port 8000    # API (serves /api/v1/health, /metrics)
 uv run celery -A ingestion.celery_app:app worker -l INFO   # ingestion worker
+uv run celery -A api.eval_worker.celery_app:app worker --queues=eval -l INFO  # eval worker
 ```
 
 ## Tests

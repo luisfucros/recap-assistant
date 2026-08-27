@@ -23,11 +23,15 @@ enforces auth + per-user scoping in the service/repository layers. The agent
 - **`api.services.memory_service`** — `MemoryService`: writes salient (preference/fact/habit/faq) and page-range summary memories, joining Postgres (content) and the `long_term_memory` Qdrant collection (embedding + filter metadata); semantic/typed/page-range retrieval with the owning `user_id` injected server-side and a spoiler-safe `max_page_end` bound; view/delete for the memory panel.
 - **`api.metrics`** — instruments HTTP metrics and exposes `/metrics`.
 - **`api.routers.admin`** — `POST /admin/users`, `AdminUser`-gated: create a regular or admin account directly, without self-registration. A first admin is seeded by a one-time, idempotent data migration from `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` (see `.env.example`) rather than any API route.
+- **`api.evaluation`** — versioned datasets, scorers, and `python -m api.evaluation.run` (enqueue then wait, or `--sync` in-process).
+- **`api.eval_worker`** — dedicated Celery app (`recap_eval`, queue `eval`) that scores runs off the HTTP path. Compose service `eval` uses this image with `celery -A api.eval_worker.celery_app:app worker --queues=eval`.
+- **`api.routers.evaluations`** — `POST /evaluations/run` (**202** pending), `GET /evaluations`, `GET /evaluations/{id}`, `GET /evaluations/datasets` (all `AdminUser`-gated).
 
 ## Run in isolation
 
 ```bash
 uv run uvicorn api.app:create_app --factory --port 8000
+uv run celery -A api.eval_worker.celery_app:app worker --queues=eval -l INFO
 # → http://localhost:8000/api/v1/health, /api/v1/docs, /metrics
 ```
 
@@ -45,3 +49,5 @@ uv run pytest services/api          # unit + functional (functional needs no ext
 ```bash
 docker build -f services/api/Dockerfile -t recap-api .   # build context = repo root
 ```
+
+The same image runs the HTTP API (default `CMD`) and, with an overridden command, the eval Celery worker / beat.

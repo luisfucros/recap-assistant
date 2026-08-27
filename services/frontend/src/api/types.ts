@@ -20,6 +20,8 @@ export interface User {
   preferred_language: Language;
   /** Global spoiler-safe default (FR-18); overridable per book/query. */
   spoiler_safe: boolean;
+  /** Operator flag; only admins see the Admin section (FR-21). */
+  is_admin: boolean;
 }
 
 /** Fields a user may update on their own profile. */
@@ -312,4 +314,174 @@ export interface Recommendation {
 /** The `/recommendations` response — a bounded top-N, not a paginated list. */
 export interface RecommendationsResponse {
   items: Recommendation[];
+}
+
+/** Lifecycle of an evaluation dataset run — mirrors `EvaluationRunStatus`. */
+export type EvaluationRunStatus = "pending" | "running" | "completed" | "failed";
+
+export function isTerminalEvalStatus(status: EvaluationRunStatus): boolean {
+  return status === "completed" || status === "failed";
+}
+
+export interface EvaluationDataset {
+  name: string;
+  version: string;
+}
+
+export interface EvaluationRetrievalScores {
+  hit_rate: number;
+  recall: number;
+  mrr: number;
+}
+
+export interface EvaluationAnswerQuality {
+  faithfulness: number;
+  relevance: number;
+  /** Per-case judge: whether citations checked out. */
+  citation_ok?: boolean;
+  /** Run-level: share of judged cases whose citations checked out. */
+  citation_ok_rate?: number;
+  reasoning?: string;
+}
+
+/** Run-level averages from the eval worker's summarizer. */
+export interface EvaluationSummary {
+  cases: number;
+  retrieval: EvaluationRetrievalScores;
+  answer_quality: {
+    faithfulness: number;
+    relevance: number;
+    citation_ok_rate: number;
+  };
+  blocked: number;
+  interrupted: number;
+}
+
+/** One dataset case as persisted on EvaluationRun.results.cases. */
+export interface EvaluationCaseResult {
+  case_id: string;
+  retrieval: EvaluationRetrievalScores;
+  answer: string;
+  blocked: boolean;
+  interrupted: boolean;
+  answer_quality: EvaluationAnswerQuality | null;
+}
+
+export interface EvaluationRun {
+  id: string;
+  dataset_name: string;
+  dataset_version: string;
+  status: EvaluationRunStatus;
+  prompt_version: string;
+  llm_provider: string;
+  llm_model: string;
+  embedding_model: string;
+  results: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseRetrieval(value: unknown): EvaluationRetrievalScores | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  const hit_rate = asNumber(rec.hit_rate);
+  const recall = asNumber(rec.recall);
+  const mrr = asNumber(rec.mrr);
+  if (hit_rate === null || recall === null || mrr === null) return null;
+  return { hit_rate, recall, mrr };
+}
+
+/** Narrow the opaque JSONB summary to the scored-run shape, or null if incomplete. */
+export function parseEvaluationSummary(summary: unknown): EvaluationSummary | null {
+  const rec = asRecord(summary);
+  if (!rec) return null;
+  const cases = asNumber(rec.cases);
+  const retrieval = parseRetrieval(rec.retrieval);
+  const quality = asRecord(rec.answer_quality);
+  const faithfulness = quality ? asNumber(quality.faithfulness) : null;
+  const relevance = quality ? asNumber(quality.relevance) : null;
+  const citation_ok_rate = quality ? asNumber(quality.citation_ok_rate) : null;
+  const blocked = asNumber(rec.blocked);
+  const interrupted = asNumber(rec.interrupted);
+  if (
+    cases === null ||
+    retrieval === null ||
+    faithfulness === null ||
+    relevance === null ||
+    citation_ok_rate === null ||
+    blocked === null ||
+    interrupted === null
+  ) {
+    return null;
+  }
+  return {
+    cases,
+    retrieval,
+    answer_quality: { faithfulness, relevance, citation_ok_rate },
+    blocked,
+    interrupted,
+  };
+}
+
+/** Narrow persisted per-case rows; skips entries that don't match the scorer shape. */
+export function parseEvaluationCases(results: unknown): EvaluationCaseResult[] {
+  const rec = asRecord(results);
+  const raw = rec?.cases;
+  if (!Array.isArray(raw)) return [];
+  const cases: EvaluationCaseResult[] = [];
+  for (const item of raw) {
+    const row = asRecord(item);
+    if (!row || typeof row.case_id !== "string") continue;
+    const retrieval = parseRetrieval(row.retrieval);
+    if (!retrieval) continue;
+    const qualityRaw = row.answer_quality;
+    let answer_quality: EvaluationAnswerQuality | null = null;
+    if (qualityRaw !== null && qualityRaw !== undefined) {
+      const q = asRecord(qualityRaw);
+      const faithfulness = q ? asNumber(q.faithfulness) : null;
+      const relevance = q ? asNumber(q.relevance) : null;
+      if (q && faithfulness !== null && relevance !== null) {
+        answer_quality = {
+          faithfulness,
+          relevance,
+          citation_ok: typeof q.citation_ok === "boolean" ? q.citation_ok : undefined,
+          reasoning: typeof q.reasoning === "string" ? q.reasoning : undefined,
+        };
+      }
+    }
+    cases.push({
+      case_id: row.case_id,
+      retrieval,
+      answer: typeof row.answer === "string" ? row.answer : "",
+      blocked: row.blocked === true,
+      interrupted: row.interrupted === true,
+      answer_quality,
+    });
+  }
+  return cases;
+}
+
+export interface EvaluationRunPage {
+  items: EvaluationRun[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface CreateUserRequest {
+  email: string;
+  password: string;
+  display_name?: string | null;
+  is_admin?: boolean;
 }

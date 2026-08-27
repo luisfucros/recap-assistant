@@ -10,6 +10,7 @@ const USER = {
   display_name: "Ada",
   preferred_language: "en",
   spoiler_safe: true,
+  is_admin: false,
 };
 
 /** The read-only routes the Dashboard's always-mounted child panels fetch. */

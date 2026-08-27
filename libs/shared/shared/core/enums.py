@@ -129,14 +129,14 @@ class ReadingEventType(enum.StrEnum):
 
 
 class EvaluationRunStatus(enum.StrEnum):
-    """Terminal outcome of one :class:`~shared.models.evaluation.EvaluationRun`.
+    """Lifecycle of one :class:`~shared.models.evaluation.EvaluationRun`.
 
-    A run is always persisted with a terminal status — there is no ``PENDING``/
-    ``RUNNING`` value because ``EvaluationService`` runs a dataset to completion
-    (or failure) synchronously within the triggering request/CLI call rather
-    than as a background job.
+    ``PENDING`` is the HTTP/CLI enqueue; ``RUNNING`` is the eval worker scoring;
+    ``COMPLETED`` / ``FAILED`` are terminal (a low score is still ``COMPLETED``).
     """
 
+    PENDING = "pending"
+    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
 

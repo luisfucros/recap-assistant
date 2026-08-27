@@ -7,8 +7,9 @@ not a :class:`~shared.repositories.base.UserScopedRepository` subject.
 """
 
 import uuid
+from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.core.errors import NotFoundError
@@ -41,3 +42,18 @@ class EvaluationRunRepository:
         if run is None:
             raise NotFoundError()
         return run
+
+    async def list_recent(self, *, limit: int = 10, offset: int = 0) -> Sequence[EvaluationRun]:
+        """Return a page of runs, newest first (admin list)."""
+        result = await self._session.execute(
+            select(EvaluationRun)
+            .order_by(EvaluationRun.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return result.scalars().all()
+
+    async def count(self) -> int:
+        """Return the total number of evaluation runs (for pagination)."""
+        result = await self._session.execute(select(func.count()).select_from(EvaluationRun))
+        return int(result.scalar_one())

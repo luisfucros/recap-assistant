@@ -87,6 +87,7 @@ class EvaluationService:
         prompts: PromptRegistry,
         tracer: Tracer,
         settings: Settings,
+        enqueue: Callable[[UUID], None] | None = None,
     ) -> None:
         self._agent_service = agent_service
         self._retrieval_service = retrieval_service
@@ -102,6 +103,129 @@ class EvaluationService:
         self._prompts = prompts
         self._tracer = tracer
         self._settings = settings
+        # Injected so unit tests never import Celery; ``Resources`` wires the
+        # eval-queue ``.delay``. Commit-then-dispatch: a broker blip leaves the
+        # row ``pending`` for the stuck sweep rather than losing the attempt.
+        self._enqueue = enqueue
+
+    async def enqueue_evaluation(
+        self,
+        *,
+        dataset_name: str,
+        session: AsyncSession,
+        runs: EvaluationRunRepository,
+        triggered_by: UUID | None = None,
+        dispatch: bool = True,
+    ) -> EvaluationRun:
+        """Validate the dataset, persist a ``pending`` run, then enqueue scoring.
+
+        Raises:
+            NotFoundError: ``dataset_name`` doesn't match a shipped dataset (no
+                row is persisted — there is nothing to have attempted).
+        """
+        dataset = load_dataset(dataset_name)
+        prompt_ref = self._prompts.get("generate").ref
+        llm_model = model_id_for(self._settings, "default")
+        run = EvaluationRun(
+            dataset_name=dataset.name,
+            dataset_version=dataset.version,
+            status=EvaluationRunStatus.PENDING,
+            prompt_version=prompt_ref,
+            llm_provider=self._settings.llm_provider,
+            llm_model=llm_model,
+            embedding_model=self._settings.embedding_model,
+            results={},
+            summary={},
+            error=None,
+            triggered_by=triggered_by,
+        )
+        await runs.add(run)
+        await session.commit()
+        logger.info(
+            "evaluation.enqueue: pending run={} dataset {}@{}",
+            run.id,
+            dataset.name,
+            dataset.version,
+        )
+        if dispatch and self._enqueue is not None:
+            try:
+                self._enqueue(run.id)
+            except Exception:
+                logger.exception(
+                    "evaluation.enqueue: broker dispatch failed run={}; sweep will retry",
+                    run.id,
+                )
+        return run
+
+    async def execute_evaluation(
+        self,
+        *,
+        run_id: UUID,
+        session: AsyncSession,
+        users: UserRepository,
+        runs: EvaluationRunRepository,
+    ) -> EvaluationRun:
+        """Score a previously enqueued run. No-op if the row is already terminal."""
+        run = await runs.get_or_404(run_id)
+        if run.status in (EvaluationRunStatus.COMPLETED, EvaluationRunStatus.FAILED):
+            logger.info(
+                "evaluation.execute: skip terminal run={} status={}",
+                run.id,
+                run.status.value,
+            )
+            return run
+
+        run.status = EvaluationRunStatus.RUNNING
+        await session.commit()
+        logger.info(
+            "evaluation.execute: started run={} dataset {}@{}",
+            run.id,
+            run.dataset_name,
+            run.dataset_version,
+        )
+
+        with self._tracer.span(
+            "evaluation_run",
+            dataset=run.dataset_name,
+            version=run.dataset_version,
+            prompt_version=run.prompt_version,
+            llm_provider=run.llm_provider,
+            llm_model=run.llm_model,
+            embedding_model=run.embedding_model,
+        ) as span:
+            try:
+                dataset = load_dataset(run.dataset_name)
+                case_results, summary = await self._run_dataset(
+                    dataset, users=users, session=session
+                )
+                run.status = EvaluationRunStatus.COMPLETED
+                run.results = {"cases": case_results}
+                run.summary = summary
+                run.error = None
+            except Exception as exc:
+                logger.opt(exception=exc).error(
+                    "evaluation.execute: failed run={} dataset {}@{}",
+                    run.id,
+                    run.dataset_name,
+                    run.dataset_version,
+                )
+                await session.rollback()
+                run = await runs.get_or_404(run_id)
+                run.status = EvaluationRunStatus.FAILED
+                run.results = {"cases": []}
+                run.summary = _summarize([])
+                run.error = str(exc)[:2048]
+                summary = run.summary
+            span.update(status=run.status.value, summary=summary)
+
+        await session.commit()
+        logger.info(
+            "evaluation.execute: persisted run={} status={} cases={}",
+            run.id,
+            run.status.value,
+            (run.summary or {}).get("cases"),
+        )
+        return run
 
     async def run_evaluation(
         self,
@@ -112,70 +236,15 @@ class EvaluationService:
         runs: EvaluationRunRepository,
         triggered_by: UUID | None = None,
     ) -> EvaluationRun:
-        """Load a dataset by name, run every case, score it, and persist the run.
-
-        A failure partway through (an LLM/embedding call exhausting its
-        fallbacks, a dataset fixture that doesn't seed cleanly, ...) still
-        yields a persisted, fetchable :class:`EvaluationRun` — ``status``
-        ``FAILED`` and ``error`` set — rather than losing the attempt, mirroring
-        the ingestion pipeline's terminal-failure recording.
-
-        Raises:
-            NotFoundError: ``dataset_name`` doesn't match a shipped dataset (no
-                run is persisted for this — there is nothing to have attempted).
-        """
-        dataset = load_dataset(dataset_name)
-        logger.info("evaluation.run: started dataset {}@{}", dataset.name, dataset.version)
-        prompt_ref = self._prompts.get("generate").ref
-        llm_model = model_id_for(self._settings, "default")
-
-        # Tagged by prompt/model/embedding version (FR-12.3) so two runs — e.g.
-        # before/after a prompt or provider change — are comparable in Langfuse
-        # (a no-op when tracing is disabled, per the observability split).
-        with self._tracer.span(
-            "evaluation_run",
-            dataset=dataset.name,
-            version=dataset.version,
-            prompt_version=prompt_ref,
-            llm_provider=self._settings.llm_provider,
-            llm_model=llm_model,
-            embedding_model=self._settings.embedding_model,
-        ) as span:
-            try:
-                case_results, summary = await self._run_dataset(
-                    dataset, users=users, session=session
-                )
-                status, error = EvaluationRunStatus.COMPLETED, None
-            except Exception as exc:
-                logger.opt(exception=exc).error(
-                    "evaluation.run: failed dataset {}@{}", dataset.name, dataset.version
-                )
-                await session.rollback()
-                case_results, summary = [], _summarize([])
-                status, error = EvaluationRunStatus.FAILED, str(exc)[:2048]
-            span.update(status=status.value, summary=summary)
-
-        run = EvaluationRun(
-            dataset_name=dataset.name,
-            dataset_version=dataset.version,
-            status=status,
-            prompt_version=prompt_ref,
-            llm_provider=self._settings.llm_provider,
-            llm_model=llm_model,
-            embedding_model=self._settings.embedding_model,
-            results={"cases": case_results},
-            summary=summary,
-            error=error,
+        """Enqueue then score in-process (CLI ``--sync``). Does not hit Celery."""
+        run = await self.enqueue_evaluation(
+            dataset_name=dataset_name,
+            session=session,
+            runs=runs,
             triggered_by=triggered_by,
+            dispatch=False,
         )
-        await runs.add(run)
-        await session.commit()
-        logger.info(
-            "evaluation.run: persisted status={} cases={}",
-            status.value,
-            summary.get("cases"),
-        )
-        return run
+        return await self.execute_evaluation(run_id=run.id, session=session, users=users, runs=runs)
 
     async def _run_dataset(
         self, dataset: EvalDataset, *, users: UserRepository, session: AsyncSession

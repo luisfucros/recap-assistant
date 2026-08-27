@@ -31,6 +31,18 @@ groups:
             endpoint at {{ $labels.instance }} for 2 minutes — uploads will
             stop being processed until it recovers.
 
+      - alert: RecapEvalWorkerDown
+        expr: up{job="eval"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Recap eval worker is unreachable"
+          description: >-
+            Prometheus has failed to scrape the eval worker's metrics
+            endpoint at {{ $labels.instance }} for 2 minutes — dataset
+            evaluation runs will stay pending until it recovers.
+
   # --- API SLOs -------------------------------------------------------------- #
   - name: recap-api-slo
     rules:

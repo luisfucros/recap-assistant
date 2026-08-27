@@ -83,3 +83,18 @@ def load_dataset(name: str, *, directory: Path | None = None) -> EvalDataset:
         raise NotFoundError(f"Unknown evaluation dataset: {name!r}")
     data = yaml.safe_load(path.read_text()) or {}
     return EvalDataset.model_validate(data)
+
+
+def list_datasets(*, directory: Path | None = None) -> list[EvalDataset]:
+    """Return every shipped YAML dataset, sorted by file stem.
+
+    Skips names starting with ``_`` so helper files never appear in the admin UI.
+    """
+    root = directory or _DEFAULT_DATASETS_DIR
+    datasets: list[EvalDataset] = []
+    for path in sorted(root.glob("*.yaml")):
+        if path.name.startswith("_"):
+            continue
+        data = yaml.safe_load(path.read_text()) or {}
+        datasets.append(EvalDataset.model_validate(data))
+    return datasets

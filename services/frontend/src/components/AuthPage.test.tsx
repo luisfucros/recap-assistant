@@ -59,6 +59,7 @@ describe("AuthPage", () => {
           display_name: null,
           preferred_language: "en",
           spoiler_safe: true,
+          is_admin: false,
         }),
       ),
     };

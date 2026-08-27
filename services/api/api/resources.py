@@ -18,6 +18,7 @@ The LLM chat model is intentionally not held here: it's built per turn in
 from contextlib import suppress
 from functools import cached_property
 from typing import ClassVar
+from uuid import UUID
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
@@ -303,6 +304,7 @@ class Resources:
             prompts=self.prompts,
             tracer=self.tracer,
             settings=self.settings,
+            enqueue=_enqueue_evaluation_run,
         )
 
     @cached_property
@@ -327,3 +329,10 @@ class Resources:
         with suppress(Exception):
             await self.checkpointer_pool.close()
         self.tracer.flush()
+
+
+def _enqueue_evaluation_run(run_id: UUID) -> None:
+    """Dispatch scoring onto the eval Celery queue (imported lazily to avoid cycles)."""
+    from api.eval_worker.tasks import run_evaluation_task
+
+    run_evaluation_task.delay(str(run_id))

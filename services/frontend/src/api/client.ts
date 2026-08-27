@@ -23,6 +23,10 @@ import type {
   RecommendationsResponse,
   ResumeRequestBody,
   User,
+  CreateUserRequest,
+  EvaluationDataset,
+  EvaluationRun,
+  EvaluationRunPage,
 } from "./types";
 
 const API_BASE: string = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -278,6 +282,30 @@ export async function deleteMemory(id: string): Promise<void> {
 /** Explainable recommendations from the reader's own library (FR-5). */
 export async function listRecommendations(limit = 5): Promise<RecommendationsResponse> {
   return request<RecommendationsResponse>(`/recommendations?limit=${limit}`);
+}
+
+/** Create a regular or admin account (admin-only). */
+export async function createUser(body: CreateUserRequest): Promise<User> {
+  return request<User>("/admin/users", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Shipped evaluation datasets (admin-only). */
+export async function listEvaluationDatasets(): Promise<{ items: EvaluationDataset[] }> {
+  return request<{ items: EvaluationDataset[] }>("/evaluations/datasets");
+}
+
+/** Evaluation runs, newest first (admin-only). */
+export async function listEvaluations(page = 1, pageSize = 50): Promise<EvaluationRunPage> {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  return request<EvaluationRunPage>(`/evaluations?${params.toString()}`);
+}
+
+/** Enqueue a dataset run; returns 202 pending (admin-only). */
+export async function runEvaluation(datasetName: string): Promise<EvaluationRun> {
+  return request<EvaluationRun>("/evaluations/run", {
+    method: "POST",
+    body: JSON.stringify({ dataset_name: datasetName }),
+  });
 }
 
 /**

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from api.evaluation.datasets.loader import load_dataset
+from api.evaluation.datasets.loader import list_datasets, load_dataset
 
 from shared.core.errors import NotFoundError
 
@@ -103,3 +103,13 @@ def test_the_shipped_sample_dataset_loads_and_has_at_least_one_case() -> None:
     assert len(dataset.cases) >= 1
     for case in dataset.cases:
         dataset.document(case.document)  # raises if the case references an unknown document
+
+
+@pytest.mark.unit
+def test_list_datasets_returns_the_shipped_sample() -> None:
+    datasets = list_datasets()
+
+    names = {d.name for d in datasets}
+    assert "sample_v1" in names
+    sample = next(d for d in datasets if d.name == "sample_v1")
+    assert sample.version

@@ -4,6 +4,7 @@
 (:mod:`api.evaluation.datasets.loader`); ``scorers/`` holds the pure retrieval
 metrics and the LLM-as-judge answer-quality scorer. The orchestration itself —
 seeding fixtures, running each case through retrieval + the agent, scoring, and
-persisting a run — is ``api.services.evaluation_service.EvaluationService``,
-alongside every other service.
+persisting a run — is ``api.services.evaluation_service.EvaluationService``
+(``enqueue_evaluation`` / ``execute_evaluation``). Scoring runs on the eval
+Celery worker, not the HTTP replica.
 """

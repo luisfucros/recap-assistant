@@ -75,8 +75,14 @@ async def test_runs_the_sample_dataset_end_to_end_and_persists_scores(
     service = _service(qdrant_client, test_settings, fake_embedder)
 
     async with db_sessionmaker() as session:
-        run = await service.run_evaluation(
+        pending = await service.enqueue_evaluation(
             dataset_name="sample_v1",
+            session=session,
+            runs=EvaluationRunRepository(session),
+            dispatch=False,
+        )
+        run = await service.execute_evaluation(
+            run_id=pending.id,
             session=session,
             users=UserRepository(session),
             runs=EvaluationRunRepository(session),
@@ -140,9 +146,9 @@ async def test_run_evaluation_raises_not_found_for_an_unknown_dataset(
 
     async with db_sessionmaker() as session:
         with pytest.raises(NotFoundError):
-            await service.run_evaluation(
+            await service.enqueue_evaluation(
                 dataset_name="does-not-exist-" + uuid.uuid4().hex,
                 session=session,
-                users=UserRepository(session),
                 runs=EvaluationRunRepository(session),
+                dispatch=False,
             )

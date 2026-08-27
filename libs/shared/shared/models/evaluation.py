@@ -6,10 +6,9 @@ like :class:`~shared.models.outbox.OutboxEvent`, this is deliberately **not** a
 :class:`~shared.repositories.base.UserScopedRepository` subject. ``triggered_by``
 is only an audit pointer to the admin who ran it.
 
-There is no in-progress status: the API's ``EvaluationService`` runs a dataset
-to completion (or failure) synchronously within the triggering request/CLI
-call, so every row lands with a terminal
-:class:`~shared.core.enums.EvaluationRunStatus`.
+A run is inserted as ``pending`` when an admin (or the CLI) enqueues it, flipped
+to ``running`` by the eval worker, then ``completed`` or ``failed``. Scoring is
+never on the HTTP request path (FR-12.5).
 """
 
 import uuid
@@ -52,3 +51,8 @@ class EvaluationRun(Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Bumped on status transitions; backs the stuck-run sweep (a ``pending`` row
+    # whose Celery message was lost, or a ``running`` worker that died).
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

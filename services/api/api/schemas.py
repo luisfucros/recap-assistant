@@ -462,6 +462,19 @@ class EvaluationRunRequest(BaseModel):
     dataset_name: str = Field(min_length=1, max_length=255)
 
 
+class EvaluationDatasetPublic(BaseModel):
+    """One shipped evaluation dataset (name + immutable version)."""
+
+    name: str
+    version: str
+
+
+class EvaluationDatasetList(BaseModel):
+    """Shipped datasets the admin UI can enqueue (not paginated — the set is tiny)."""
+
+    items: list[EvaluationDatasetPublic]
+
+
 class EvaluationRunPublic(BaseModel):
     """One persisted evaluation run: what it ran with, and its scores.
 
@@ -484,3 +497,12 @@ class EvaluationRunPublic(BaseModel):
     summary: dict[str, Any]
     error: str | None
     created_at: datetime
+
+
+class EvaluationRunPage(BaseModel):
+    """A page of evaluation runs (standard list envelope)."""
+
+    items: list[EvaluationRunPublic]
+    total: int
+    page: int
+    page_size: int

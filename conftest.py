@@ -41,6 +41,7 @@ _TRUNCATE_TABLES = (
     "chunks",
     "documents",
     "outbox",
+    "evaluation_runs",
     "users",
 )
 

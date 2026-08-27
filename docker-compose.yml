@@ -9,7 +9,7 @@ name: recap
 # service migrates on its own. The `frontend` service is added with the frontend
 # task; `langfuse` tracing is optional (the app no-ops without it).
 
-# Anchor: app services (api/ingestion/beat/migrate) share build context + env.
+# Anchor: app services (api/eval/eval-beat/ingestion/beat/migrate) share env.
 x-app-env: &app-env
   env_file:
     - .env
@@ -84,6 +84,68 @@ services:
           target: /app/libs/shared/shared
         - action: rebuild
           path: ./uv.lock
+
+  # --- Evaluation worker: Celery, same API image (FR-12.5) -------------------
+  eval:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    <<: *app-env
+    restart: unless-stopped
+    command:
+      [
+        "celery",
+        "-A",
+        "api.eval_worker.celery_app:app",
+        "worker",
+        "--loglevel=INFO",
+        "--queues=eval",
+        "--concurrency=1",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+      checkpointer-setup:
+        condition: service_completed_successfully
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./services/api/api
+          target: /app/services/api/api
+        - action: sync+restart
+          path: ./libs/shared/shared
+          target: /app/libs/shared/shared
+        - action: rebuild
+          path: ./uv.lock
+
+  # --- Eval beat: stuck-run sweep — MUST be single instance ------------------
+  eval-beat:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    <<: *app-env
+    restart: unless-stopped
+    command:
+      [
+        "celery",
+        "-A",
+        "api.eval_worker.celery_app:app",
+        "beat",
+        "--loglevel=INFO",
+        "--schedule",
+        "/tmp/celerybeat-schedule",
+      ]
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # --- Ingestion pipeline: Celery worker ------------------------------------
   ingestion:

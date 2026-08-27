@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/1"
     # Port the ingestion worker serves its Prometheus /metrics on.
     ingestion_metrics_port: int = 9808
+    # Port the eval Celery worker serves its Prometheus /metrics on (compose
+    # service ``eval``, scraped as job ``eval`` — distinct from the API's :8000).
+    eval_metrics_port: int = 9809
+    # Beat-scheduled safety net on the eval app only: re-enqueue a ``pending``/
+    # ``running`` evaluation run whose ``updated_at`` is older than this (the
+    # commit-then-delay can lose the broker message). Comfortably above a
+    # healthy dataset run, including LLM retries.
+    eval_sweep_interval_seconds: float = 60.0
+    eval_stuck_threshold_seconds: int = 900
 
     # --- Uploads ----------------------------------------------------------- #
     # Hard cap on an uploaded document's size, enforced while streaming at the

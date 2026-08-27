@@ -215,6 +215,7 @@ version = "0.0.0"
 source = { editable = "services/api" }
 dependencies = [
     { name = "authlib" },
+    { name = "celery", extra = ["redis"] },
     { name = "fastapi" },
     { name = "itsdangerous" },
     { name = "langchain-anthropic" },
@@ -234,6 +235,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "authlib", specifier = "==1.6.12" },
+    { name = "celery", extras = ["redis"], specifier = "==5.5.3" },
     { name = "fastapi", specifier = "==0.138.2" },
     { name = "itsdangerous", specifier = "==2.2.0" },
     { name = "langchain-anthropic", specifier = "==1.4.8" },

@@ -4,7 +4,7 @@
 
 ## 1. Architectural overview
 
-A **microservice** system: two independently deployable, independently scalable backend services — the **Assistant/API service** (FastAPI + LangGraph agent) and the **Ingestion service** (Celery workers) — sharing a common library and communicating **asynchronously** through Postgres (source of truth + transactional outbox), the Celery broker (Redis), object storage (S3/MinIO), and Qdrant (vectors). No synchronous calls between the two: the API commits an upload + outbox event; the ingestion service drains the queue and writes chunks/vectors back; the API reads status from Postgres. Every service exposes `/metrics` (Prometheus) and health; **Grafana** dashboards them. LLM/RAG tracing (Langfuse) is **optional** — absent credentials, it is a no-op.
+A **microservice** system: two independently deployable, independently scalable backend services — the **Assistant/API service** (FastAPI + LangGraph agent, plus a **dedicated eval Celery worker** on the same image) and the **Ingestion service** (Celery workers for parse/chunk/embed) — sharing a common library and communicating **asynchronously** through Postgres (source of truth + transactional outbox), the Celery broker (Redis), object storage (S3/MinIO), and Qdrant (vectors). No synchronous calls between the two: the API commits an upload + outbox event; the ingestion service drains the queue and writes chunks/vectors back; the API reads status from Postgres. Evaluation scoring is an API-owned background job (FR-12.5): it needs the agent graph, so it must not run on ingestion workers. Every service exposes `/metrics` (Prometheus) and health; **Grafana** dashboards them. LLM/RAG tracing (Langfuse) is **optional** — absent credentials, it is a no-op.
 
 ```
                           ┌─────────────────────────────────────────────┐
@@ -13,6 +13,7 @@ A **microservice** system: two independently deployable, independently scalable 
   │  Auth  Library    │   │  Routers ─► Services ─► Repositories          │
   │  Chat (SSE/WS)    │◄──┼─► AgentService (LangGraph: guardrails, tools, │
   │  Progress  Recs   │   │     HITL, streaming)                          │
+  │  Admin (evals)    │   │  Eval Celery worker (queue `eval`, same image) │
   └──────────────────┘   │  IngestionService = validate+store+outbox ONLY│
           ▲              └───┬──────────┬───────────┬──────────┬──────────┘
           │ httpOnly         │          │           │          │
@@ -247,11 +248,13 @@ Standard error shape `{ "detail": "...", "code": "SNAKE_CASE_CODE" }`; list endp
 | GET | `/recommendations` | Explainable recommendations |
 | GET/DELETE | `/memory` | View / delete long-term memories (privacy) |
 | POST | `/chat/{conversation_id}/resume` | Resume a HITL-interrupted run (approve / edit / deny) |
-| POST | `/evaluations/run` · GET `/evaluations/{id}` | Trigger an eval run against a dataset / fetch results (admin) |
+| POST | `/admin/users` | Create a regular or admin account (admin only; public self-registration cannot set `is_admin`) |
+| POST | `/evaluations/run` | Enqueue an eval run against a named dataset (**202** + `pending` row; admin). Scoring is not on this request. |
+| GET | `/evaluations` · `/evaluations/{id}` · `/evaluations/datasets` | List runs (newest first) / fetch one run / list shipped dataset names+versions (admin) |
 
 ## 10. Cross-cutting concerns
 
-- **Config:** Pydantic `Settings` from env only; `.env.example` documents every var — DB/Qdrant/Redis URLs, `CELERY_BROKER_URL`, **storage** (`STORAGE_ENDPOINT`, S3 keys, bucket), **`LLM_PROVIDER`** + per-provider keys/base-urls (incl. `OLLAMA_BASE_URL`), **`EMBEDDINGS_PROVIDER`** + keys/model, `EMBED_BATCH_SIZE`, **`WEB_SEARCH_PROVIDER`** + `BRAVE_API_KEY`/`TAVILY_API_KEY`, **short-term-memory compaction** (`LLM_CONTEXT_WINDOW` per active model, `COMPACTION_THRESHOLD_RATIO` default `0.75`), **`SCRATCHPAD_TTL_SECONDS`** (agent turn scratchpad expiry), **`DEFAULT_LANGUAGE`** (default `en`; fallback for new users and undetected document language), **multimodal input** (`TRANSCRIPTION_PROVIDER`, `VISION_PROVIDER` + per-provider keys/base-urls), **`SPOILER_SAFE_DEFAULT`** (default `true`), **Langfuse** (`LANGFUSE_HOST`, keys — *optional*), Prometheus/Grafana ports, JWT secret, Google OAuth client. Missing Langfuse keys ⇒ tracing no-op.
+- **Config:** Pydantic `Settings` from env only; `.env.example` documents every var — DB/Qdrant/Redis URLs, `CELERY_BROKER_URL`, **storage** (`STORAGE_ENDPOINT`, S3 keys, bucket), **`LLM_PROVIDER`** + per-provider keys/base-urls (incl. `OLLAMA_BASE_URL`), **`EMBEDDINGS_PROVIDER`** + keys/model, `EMBED_BATCH_SIZE`, **`WEB_SEARCH_PROVIDER`** + `BRAVE_API_KEY`/`TAVILY_API_KEY`, **short-term-memory compaction** (`LLM_CONTEXT_WINDOW` per active model, `COMPACTION_THRESHOLD_RATIO` default `0.75`), **`SCRATCHPAD_TTL_SECONDS`** (agent turn scratchpad expiry), **`DEFAULT_LANGUAGE`** (default `en`; fallback for new users and undetected document language), **multimodal input** (`TRANSCRIPTION_PROVIDER`, `VISION_PROVIDER` + per-provider keys/base-urls), **`SPOILER_SAFE_DEFAULT`** (default `true`), **eval worker** (`EVAL_STUCK_THRESHOLD_SECONDS` — re-enqueue a `pending`/`running` evaluation run past this age), **Langfuse** (`LANGFUSE_HOST`, keys — *optional*), Prometheus/Grafana ports, JWT secret, Google OAuth client. Missing Langfuse keys ⇒ tracing no-op.
 - **Auth dependency:** verifies the JWT on every protected route and yields the current user; services re-check ownership.
 - **Isolation:** enforced at repository (SQL `WHERE user_id=`) and Qdrant (payload filter) layers — defense in depth, UI-independent.
 - **Observability:** structured JSON logs (no tokens/PII), request-id tracing, metrics (ingestion throughput, query latency, per-user token spend, tool-call counts), **plus Langfuse LLM/RAG traces** (§13). Tracing is best-effort — a Langfuse outage never fails a user request.
@@ -288,7 +291,11 @@ Two independent pillars. **Metrics are always on; tracing is optional.**
 - **Retrieval:** hit-rate / recall / MRR of relevant chunks for a query.
 - **Answer quality:** groundedness/faithfulness to retrieved context, relevance, citation correctness — with an **LLM-as-judge** scorer option.
 
-Runs are triggered on demand (`POST /evaluations/run`) or in CI against a fixed dataset, recorded to Langfuse, and comparable across prompt/model/embedding versions so a change can be shown to improve or regress quality. Datasets are versioned artifacts for reproducibility.
+**Trigger vs execute (FR-12.5).** Scoring is too slow and LLM-heavy to hold an HTTP replica. `enqueue_evaluation` loads the dataset (404 if unknown — **no row**), inserts an `EvaluationRun` as `pending` (prompt/model/embedding tags already filled so a waiting row is comparable), **commits**, then enqueues a Celery task with the run id on queue **`eval`**. `POST /evaluations/run` returns **202** with that row. `execute_evaluation` (worker) flips `pending` → `running`, seeds fixtures / scores as today, then writes `completed` or `failed` (+ `results` / `summary` / `error`). The client **polls** `GET /evaluations` / `GET /evaluations/{id}`; eval runs are not streamed. `GET /evaluations/datasets` lists shipped artifacts so the UI does not hard-code names.
+
+**Why an API-owned worker, not ingestion.** The run calls `AgentService` (LangGraph, tools, judge LLM). LangChain stays out of `shared`/ingestion; the services never HTTP-call each other. Ingestion Celery is parse/chunk/embed on a different resource profile. Eval therefore gets a **second Celery app** in `services/api` (same `CELERY_BROKER_URL`, queue `eval`, `task_acks_late`, prefetch 1) and a compose service using the **API image** with `celery -A … worker --queues=eval`. Ingestion workers must not subscribe to `eval`. Commit-then-delay can lose the enqueue if Redis is down; a beat sweep on *this* app re-enqueues stuck `pending`/`running` rows (mirrors `sweep_stuck_documents`). Execute is a no-op on an already-terminal row.
+
+CI / `python -m api.evaluation.run` enqueue then wait for a terminal status (or `--sync` for in-process); still exit non-zero only on `failed`, never on a low score. Runs stay tagged for Langfuse + the persisted row so two runs remain comparable across prompt/model/embedding versions (FR-12.3). Datasets stay versioned artifacts (FR-12.4).
 
 ## 15. Human-in-the-loop (HITL)
 
@@ -306,12 +313,14 @@ All interrupts and their resolutions are traced. Because state is checkpointed, 
 ## 16. Deployment (Docker Compose)
 
 Services:
-- **`migrate`** — one-shot: runs `alembic upgrade head` (from `libs/shared/db`) and exits; the single component that writes the schema. `api`/`ingestion`/`ingestion-beat` use `depends_on: condition: service_completed_successfully`.
+- **`migrate`** — one-shot: runs `alembic upgrade head` (from `libs/shared/db`) and exits; the single component that writes the schema. `api`/`ingestion`/`ingestion-beat`/`eval` use `depends_on: condition: service_completed_successfully`.
 - **`api`** — Assistant/API service (FastAPI); scales on replicas.
+- **`eval`** — Celery worker for evaluation runs (FR-12.5); **same API image**, queue `eval`, concurrency 1. Scales independently of `api` and of `ingestion`.
+- **`eval-beat`** — Celery beat for the stuck-eval-run sweep (single instance). Never share `ingestion-beat`.
 - **`ingestion`** — Celery worker(s) for the ingestion pipeline; scales independently on worker count/replicas.
 - **`ingestion-beat`** — Celery beat running the outbox relay (single instance).
 - **`postgres`**, **`adminer`** (DB admin UI), **`qdrant`**, **`redis`** (Celery broker + cache), **`minio`**, **`frontend`**.
-- **`prometheus`** + **`grafana`** (+ `node-exporter`) — always on; scrape `api` and `ingestion` `/metrics`; Grafana ships provisioned dashboards.
+- **`prometheus`** + **`grafana`** (+ `node-exporter`) — always on; scrape `api`, `ingestion`, and `eval` `/metrics`; Grafana ships provisioned dashboards.
 - **`langfuse`** (+ its own Postgres) — **optional**, behind a compose profile; if not run / no creds, tracing is a no-op.
 - **`ollama`** — optional profile for the fully-local model configuration.
 
@@ -374,6 +383,8 @@ Services:
 
 **Application services (ECS Fargate, private subnets):**
 - **API service** — stateless FastAPI app, 2+ task replicas by default, scales on CloudWatch CPU/memory metrics. Each task definition specifies memory (512 MB min, e.g. 1024 MB for spare headroom), CPU (0.25–1 vCPU), log routing to CloudWatch, and a long-running HTTP container. Health checks via ALB target group every 30 s.
+- **Eval workers** — same API image as a Celery consumer on queue `eval` (FR-12.5); 1+ replicas, scaled independently of HTTP API tasks and of ingestion. Do not run eval on ingestion task definitions.
+- **Eval beat** — single Celery beat task on the eval app (stuck-run sweep). Do not share the ingestion beat.
 - **Ingestion workers** — stateless Celery worker app; 1+ replicas, auto-scales from 1 to 5+ based on SQS `ApproximateNumberOfMessages` (via `aws-autoscaling` service). Each task similar to API (memory, CPU, logs).
 - **Ingestion beat** — single Celery beat task (no auto-scale for statefulness) running the outbox relay every 5 s on a dedicated task definition with lower resource requirements.
 - **One-shot Migrate job** — an ECS task definition (not a service) that runs `alembic upgrade head` as a pre-deploy step; the main task-definition launch plan waits for its completion (via CloudWatch event / SNS / Lambda, or manual orchestration depending on deploy approach).
@@ -432,7 +443,7 @@ Docker Compose (§16) remains the dev/test environment. No Terraform/AWS knowled
 4c. **Migrations: single owner, one-shot job** — schema + Alembic versions live in `libs/shared/db` (with the models both services share); a dedicated `migrate` container applies them once and exits, and services gate on its completion. No service auto-migrates on startup, so replicas/services never race on `alembic_version`.
 5. **Batched embeddings** — bounded memory per embed call; the difference between working and OOM on large PDFs / local sentence-transformers models.
 6. **Microservices: API vs ingestion** — the two have opposite resource profiles (latency-sensitive/stateless vs CPU-memory-heavy/bursty). Separate services let ingestion scale and fail independently; they coordinate only through Postgres/outbox + broker + Qdrant + storage, never synchronous calls.
-7. **Celery for ingestion** — mature task queue with beat scheduling (outbox relay), retries, and dead-letter; the ingestion service is not on the async request path, so Celery's model fits and its ecosystem (monitoring, routing) is a plus.
+7. **Celery for ingestion** — mature task queue with beat scheduling (outbox relay), retries, and dead-letter; the ingestion service is not on the async request path, so Celery's model fits and its ecosystem (monitoring, routing) is a plus. **Evaluation uses Celery too, but a separate app/queue/worker on the API image** (FR-12.5): scoring needs LangGraph, so it must not share the ingest pool or live in `ingestion/`.
 8. **Metrics always on, tracing optional** — Prometheus/Grafana give operational SLIs (latency, throughput, CPU/mem, retrieval time) with no external dependency; Langfuse (deep LLM traces) is opt-in and no-ops without credentials, so the app never hard-depends on it.
 9. **Pluggable web search (Brave/Tavily)** — same `WebSearchProvider` interface; pick per cost/quality/availability via config.
 10. **Prompt registry + eval dataset** — prompts are versioned and quality is measurable against a fixed dataset, so a prompt/model/embedding change is attributable and comparable.
@@ -447,3 +458,4 @@ Docker Compose (§16) remains the dev/test environment. No Terraform/AWS knowled
 18. **Event-sourced reading history for analytics** — an append-only `reading_events` trail (not just mutable `current_page`) is what makes pace/streaks/history computable and auditable; analytics are derived + cached, so the hot read/update path stays cheap.
 19. **Spoiler-safe as a layered, cross-source constraint** — a single retrieval default can't hold the guarantee once web search and model knowledge enter, so spoiler-safety is enforced at retrieval (hard page filter), memory (page_end bound), *and* output (a generation-time spoiler check), with an explicit HITL opt-in rather than a silent reveal. Position-awareness is a product promise, so it's belt-and-suspenders.
 20. **Multimodal in, text everywhere else** — normalizing audio/image to text at the front door (`normalize_input`) keeps one embedding space, one guardrail path, and one reasoning path; the alternative (native multimodal vectors/models throughout) multiplies the vector store, guardrails, and provider surface for marginal gain in a reading assistant.
+21. **Eval scoring off the request path, on the API image** — `POST /evaluations/run` persists `pending` and returns 202; a dedicated `eval` Celery queue runs `AgentService` + judges. Putting that work on ingestion workers would import LangGraph into the CPU-heavy ingest process (or require a forbidden sync call to the API). An Admin shell section (FR-21) is the operator UI; it is not a second SPA.

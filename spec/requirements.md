@@ -150,6 +150,8 @@
 - FR-12.2 Metrics cover retrieval quality (e.g. hit rate / recall of relevant chunks) and answer quality (groundedness/faithfulness, relevance, citation correctness), including an LLM-as-judge option.
 - FR-12.3 Evaluations are runnable on demand and in CI against a fixed dataset; results are recorded/traced (Langfuse) and comparable across prompt/model/embedding versions.
 - FR-12.4 Datasets are managed as artifacts (versioned) so runs are reproducible.
+- FR-12.5 **An evaluation run is a background job, not an HTTP request.** Triggering a run (API or CLI) **persists a `pending` row and returns immediately**; scoring (seed fixtures, retrieval, agent turns, LLM-as-judge) runs in a **dedicated Celery worker that belongs to the Assistant/API service** — same image and `Resources` as the API, **separate queue and process** from ingestion. Ingestion workers never run eval tasks (they have no LangGraph/agent stack; the two services do not call each other). A run's status is `pending` → `running` → `completed` / `failed`; the client **polls** (list/get), it does not stream tokens. A stuck `pending`/`running` run is re-enqueued by a sweep on the eval worker, analogous to stuck-document ingest. The CLI / CI entrypoint still exits non-zero only if the run **failed to complete**, never on a low score.
+- FR-12.6 Admins can **list shipped datasets**, **start a run**, and **inspect past runs** (status, prompt/model/embedding tags, summary metrics, per-case results, error) from the product UI (FR-21), not only via HTTP/CLI.
 
 ### FR-13 Human-in-the-loop (HITL)
 
@@ -204,11 +206,17 @@
 
 ### FR-20 Frontend design system
 
-- FR-20.1 The frontend uses a single, cohesive **design system** — shared color/spacing/typography tokens and a small set of reusable primitives (buttons, inputs, cards, badges, nav) — rather than per-component ad hoc markup, so every panel (library, reading, chat, memory, recommendations, analytics) reads as one product.
+- FR-20.1 The frontend uses a single, cohesive **design system** — shared color/spacing/typography tokens and a small set of reusable primitives (buttons, inputs, cards, badges, nav) — rather than per-component ad hoc markup, so every panel (library, reading, chat, memory, recommendations, analytics, and the admin console when shown) reads as one product.
 - FR-20.2 The signed-in app is organized as a **persistent shell** (branding, navigation, account controls) with a focused content area per section, not one long undifferentiated scroll of every panel at once.
 - FR-20.3 Interactive states — loading, empty, error, and success — are visually distinct and present for every panel that fetches data, so the user is never looking at a blank or ambiguous screen.
 - FR-20.4 The layout is responsive down to a single-column mobile width; no horizontal scrolling of the page itself (wide content like tables/transcripts scrolls in its own container).
 - FR-20.5 Visual design does not change any existing HTTP contract, component prop/behavior contract visible to tests, or accessibility semantics (labels, roles) already relied upon.
+
+### FR-21 Admin console
+
+- FR-21.1 Signed-in users with `is_admin` see an **Admin** section in the persistent shell (FR-20.2); non-admins never see it and receive 403 on admin-only routes (same `AdminUser` gate as today).
+- FR-21.2 From that section an admin can **create a regular or admin account** (`POST /admin/users`) without self-registration — public sign-up still cannot set `is_admin`.
+- FR-21.3 The same section is the operator UI for **evaluation runs** (FR-12.5 / FR-12.6): pick a dataset, enqueue a run, watch status, read scores. No separate admin SPA.
 
 ## 4. Non-functional requirements
 
@@ -276,7 +284,8 @@
 - Consequential tools (those reaching outside the user's own data — currently web search / external recommendation) prompt for approval and only run once approved; read-only user-scoped tools run without a prompt.
 - Off-topic and inappropriate requests are declined by the guardrails.
 - Every agent turn (LLM, tools, embeddings, retrieval, guardrails) appears as a Langfuse trace with token/latency/prompt-version data **when Langfuse is configured**; with no credentials the app runs identically without tracing.
-- The evaluation service runs against a custom dataset and reports retrieval + answer-quality metrics.
+- The evaluation service runs against a custom dataset and reports retrieval + answer-quality metrics; an admin can enqueue a run from the UI and the HTTP request does not wait for scoring to finish.
+- An admin can create another user (regular or admin) from the Admin section; a non-admin never sees that section.
 - The assistant/API backend and ingestion pipeline run as **separate services**; stopping the ingestion service queues uploads without taking down the API.
 - Prometheus scrapes each service's `/metrics`; Grafana shows request latency/throughput, CPU/memory, and retrieval/ingestion timings.
 - Web search works with either Brave or Tavily by changing `WEB_SEARCH_PROVIDER`.

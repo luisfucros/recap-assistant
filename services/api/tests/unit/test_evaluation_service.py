@@ -21,9 +21,25 @@ from api.services.evaluation_service import (
 )
 
 from shared.core.config import Settings
+from shared.core.enums import EvaluationRunStatus
+from shared.core.errors import NotFoundError
 from shared.models.user import User
 
 pytestmark = pytest.mark.unit
+
+
+class _FakeTracer:
+    def span(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def update(self, **kwargs):
+        pass
 
 
 class _FakeUserRepository:
@@ -40,7 +56,7 @@ class _FakeUserRepository:
         return user
 
 
-def _service() -> EvaluationService:
+def _service(*, enqueue=None) -> EvaluationService:
     """An ``EvaluationService`` with placeholder collaborators.
 
     Only ``_ensure_eval_user``/``_summarize``-adjacent behavior is under test
@@ -59,9 +75,10 @@ def _service() -> EvaluationService:
         embedder=SimpleNamespace(),
         vector_store=SimpleNamespace(),
         judge_model=SimpleNamespace(),
-        prompts=SimpleNamespace(),
-        tracer=SimpleNamespace(),
+        prompts=SimpleNamespace(get=lambda _name: SimpleNamespace(ref="generate@v5")),
+        tracer=_FakeTracer(),
         settings=Settings(_env_file=None, jwt_secret="test-secret"),
+        enqueue=enqueue,
     )
 
 
@@ -162,3 +179,134 @@ class TestSummarize:
 
         assert summary["interrupted"] == 1
         assert summary["blocked"] == 0
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class _FakeRuns:
+    def __init__(self) -> None:
+        self.added: list = []
+        self.by_id: dict = {}
+
+    async def add(self, run):
+        if run.id is None:
+            run.id = uuid.uuid4()
+        self.added.append(run)
+        self.by_id[run.id] = run
+        return run
+
+    async def get_or_404(self, run_id: uuid.UUID):
+        run = self.by_id.get(run_id)
+        if run is None:
+            raise NotFoundError()
+        return run
+
+
+class TestEnqueueEvaluation:
+    async def test_persists_pending_and_dispatches_without_running_the_agent(self) -> None:
+        dispatched: list[uuid.UUID] = []
+        agent = SimpleNamespace(run=None)
+
+        def _run(*_a, **_k):
+            raise AssertionError("agent must not run on enqueue")
+
+        agent.run = _run
+        service = _service(enqueue=dispatched.append)
+        service._agent_service = agent
+        session = _FakeSession()
+        runs = _FakeRuns()
+
+        run = await service.enqueue_evaluation(dataset_name="sample_v1", session=session, runs=runs)
+
+        assert run.status is EvaluationRunStatus.PENDING
+        assert run.dataset_name == "sample_v1"
+        assert session.commits == 1
+        assert dispatched == [run.id]
+        assert len(runs.added) == 1
+
+    async def test_unknown_dataset_404s_with_no_row(self) -> None:
+        dispatched: list[uuid.UUID] = []
+        service = _service(enqueue=dispatched.append)
+        session = _FakeSession()
+        runs = _FakeRuns()
+
+        with pytest.raises(NotFoundError):
+            await service.enqueue_evaluation(
+                dataset_name="does-not-exist", session=session, runs=runs
+            )
+
+        assert runs.added == []
+        assert dispatched == []
+        assert session.commits == 0
+
+
+class TestExecuteEvaluation:
+    async def test_scores_a_pending_run(self) -> None:
+        service = _service()
+        session = _FakeSession()
+        runs = _FakeRuns()
+        pending = await service.enqueue_evaluation(
+            dataset_name="sample_v1", session=session, runs=runs, dispatch=False
+        )
+
+        async def _fake_dataset(*_a, **_k):
+            return (
+                [
+                    {
+                        "case_id": "c1",
+                        "retrieval": {"hit_rate": 1.0, "recall": 1.0, "mrr": 1.0},
+                        "answer_quality": None,
+                        "blocked": False,
+                        "interrupted": False,
+                    }
+                ],
+                {"cases": 1},
+            )
+
+        service._run_dataset = _fake_dataset  # type: ignore[method-assign]
+
+        result = await service.execute_evaluation(
+            run_id=pending.id,
+            session=session,
+            users=_FakeUserRepository(),
+            runs=runs,
+        )
+
+        assert result.status is EvaluationRunStatus.COMPLETED
+        assert result.summary == {"cases": 1}
+        assert result.results["cases"][0]["case_id"] == "c1"
+
+    async def test_terminal_run_is_a_noop(self) -> None:
+        service = _service()
+        session = _FakeSession()
+        runs = _FakeRuns()
+        pending = await service.enqueue_evaluation(
+            dataset_name="sample_v1", session=session, runs=runs, dispatch=False
+        )
+        pending.status = EvaluationRunStatus.COMPLETED
+        pending.summary = {"cases": 3}
+
+        async def _must_not_run(*_a, **_k):
+            raise AssertionError("must not score a terminal run")
+
+        service._run_dataset = _must_not_run  # type: ignore[method-assign]
+
+        result = await service.execute_evaluation(
+            run_id=pending.id,
+            session=session,
+            users=_FakeUserRepository(),
+            runs=runs,
+        )
+
+        assert result.status is EvaluationRunStatus.COMPLETED
+        assert result.summary == {"cases": 3}
