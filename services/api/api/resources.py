@@ -296,7 +296,9 @@ class Resources:
             summarizer=self.chat_model(tier="cheap"),
             embedder=self.embedder,
             vector_store=ChunkVectorStore(
-                self.qdrant, collection=self.settings.qdrant_chunks_collection
+                self.qdrant,
+                collection=self.settings.qdrant_chunks_collection,
+                dim=self.embedder.dim,
             ),
             judge_model=build_resilient_structured_model(
                 self.settings, EvaluationJudgment, tier="cheap"

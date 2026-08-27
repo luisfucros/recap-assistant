@@ -18,7 +18,7 @@ are comparable across a prompt or provider change (FR-12.3).
 
 import hashlib
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -39,7 +39,7 @@ from api.services.recommendation_service import RecommendationService
 from api.services.retrieval_service import RetrievalService
 from api.services.usage_service import UsageService
 from shared.core.config import Settings
-from shared.core.enums import DocumentFormat, DocumentStatus, EvaluationRunStatus
+from shared.core.enums import DocumentFormat, DocumentStatus, EvaluationRunStatus, Language
 from shared.models.document import Chunk, Document
 from shared.models.evaluation import EvaluationRun
 from shared.models.user import User
@@ -305,16 +305,29 @@ class EvaluationService:
     ) -> dict[str, tuple[UUID, list[UUID]]]:
         """Seed each dataset document as real rows + vectors, once per version.
 
+        Creates the ``document_chunks`` collection if this stack has never
+        ingested a user document (eval is often the first writer). Mirrors
+        ingestion's upsert path and ``MemoryService.write_memory``. Existing
+        Postgres fixture rows are re-upserted into Qdrant so a wiped vector
+        store still scores instead of searching an empty collection.
+
         Returns a mapping of document key -> ``(document_id, chunk_ids)``, chunk
         ids ordered by ``ordinal`` so a case's ``expected_chunk_ordinals`` index
         into it directly.
         """
+        await self._vector_store.ensure_collection()
         fixtures: dict[str, tuple[UUID, list[UUID]]] = {}
         for doc in dataset.documents:
             document_id = _deterministic_id(dataset.name, dataset.version, doc.key)
             existing_doc = await documents.get(document_id)
             if existing_doc is not None:
                 existing_chunks = await chunks.list_by_document(document_id)
+                await self._index_fixture_chunks(
+                    existing_chunks,
+                    title=existing_doc.title,
+                    author=existing_doc.author,
+                    language=existing_doc.language,
+                )
                 fixtures[doc.key] = (document_id, [c.id for c in existing_chunks])
                 continue
 
@@ -354,21 +367,34 @@ class EvaluationService:
             await chunks.add_many(chunk_rows)
             await session.flush()
 
-            vectors = await self._embedder.embed([c.text for c in chunk_rows])
-            await self._vector_store.upsert(
-                ids=[c.vector_id for c in chunk_rows],
-                vectors=vectors,
-                payloads=[
-                    build_chunk_payload(
-                        c, title=doc.title, author=doc.author, language=doc.language
-                    )
-                    for c in chunk_rows
-                ],
+            await self._index_fixture_chunks(
+                chunk_rows, title=doc.title, author=doc.author, language=doc.language
             )
             fixtures[doc.key] = (document_id, [c.id for c in chunk_rows])
 
         await session.commit()
         return fixtures
+
+    async def _index_fixture_chunks(
+        self,
+        chunk_rows: Sequence[Chunk],
+        *,
+        title: str | None,
+        author: str | None,
+        language: Language | None,
+    ) -> None:
+        """Embed and upsert fixture chunks (idempotent; no-op if there are none)."""
+        if not chunk_rows:
+            return
+        vectors = await self._embedder.embed([c.text for c in chunk_rows])
+        await self._vector_store.upsert(
+            ids=[c.vector_id or chunk_point_id(c.id) for c in chunk_rows],
+            vectors=vectors,
+            payloads=[
+                build_chunk_payload(c, title=title, author=author, language=language)
+                for c in chunk_rows
+            ],
+        )
 
     async def _run_case(
         self,

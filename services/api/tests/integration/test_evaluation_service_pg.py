@@ -68,10 +68,7 @@ def _service(qdrant_client, test_settings, embedder) -> EvaluationService:
 async def test_runs_the_sample_dataset_end_to_end_and_persists_scores(
     db_sessionmaker, qdrant_client, test_settings, fake_embedder
 ) -> None:
-    store = ChunkVectorStore(
-        qdrant_client, collection=test_settings.qdrant_chunks_collection, dim=8
-    )
-    await store.ensure_collection()
+    # Collection is created by EvaluationService (eval is often the first writer).
     service = _service(qdrant_client, test_settings, fake_embedder)
 
     async with db_sessionmaker() as session:
@@ -113,10 +110,6 @@ async def test_runs_the_sample_dataset_end_to_end_and_persists_scores(
 async def test_a_second_run_reuses_the_same_seeded_fixtures(
     db_sessionmaker, qdrant_client, test_settings, fake_embedder
 ) -> None:
-    store = ChunkVectorStore(
-        qdrant_client, collection=test_settings.qdrant_chunks_collection, dim=8
-    )
-    await store.ensure_collection()
     service = _service(qdrant_client, test_settings, fake_embedder)
 
     async with db_sessionmaker() as session:

@@ -13,6 +13,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from api.evaluation.datasets.loader import load_dataset
 from api.services.evaluation_service import (
     _EVAL_SYSTEM_EMAIL,
     EvaluationService,
@@ -310,3 +311,29 @@ class TestExecuteEvaluation:
 
         assert result.status is EvaluationRunStatus.COMPLETED
         assert result.summary == {"cases": 3}
+
+
+class TestEnsureFixtures:
+    async def test_creates_the_chunks_collection_before_seeding(self) -> None:
+        """Eval is often the first writer; Qdrant 404s if the collection is missing."""
+        from unittest.mock import AsyncMock
+
+        store = SimpleNamespace(ensure_collection=AsyncMock())
+        service = _service()
+        service._vector_store = store
+        documents = SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(title=None, author=None, language=None)),
+            user_id=uuid.uuid4(),
+        )
+        chunks = SimpleNamespace(list_by_document=AsyncMock(return_value=[]))
+        session = SimpleNamespace(commit=AsyncMock())
+
+        await service._ensure_fixtures(
+            load_dataset("sample_v1"),
+            session=session,
+            documents=documents,
+            chunks=chunks,
+        )
+
+        store.ensure_collection.assert_awaited_once()
+        assert documents.get.await_count >= 1
