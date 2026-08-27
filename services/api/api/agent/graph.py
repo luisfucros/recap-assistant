@@ -6,11 +6,11 @@ The graph runs a fixed pipeline per turn, with a tool loop in the middle::
                           │
                      (proceeds)
                           ↓
-    load_progress → load_memories → plan → generate ⇄ tools
-                                 │
-                          (no tool calls)
-                                 ↓
-    extract_memory → persist_memory → guardrail_out → compact → END
+    load_progress → load_memories → plan → extract_memory → generate ⇄ tools
+                                                              │
+                                                       (no tool calls)
+                                                              ↓
+                                              persist_memory → guardrail_out → compact → END
 
 Each stage has one job:
 
@@ -35,6 +35,15 @@ Each stage has one job:
   turn need tools at all? Sees the current message plus the same short prior
   user/assistant slice as ``guardrail_in``, so follow-ups can still plan
   retrieval instead of skipping tools.
+* **extract_memory** — a cheap-tier :class:`~api.agent.schemas.MemoryClassification`
+  judge over the reader's latest message plus a short prior user/assistant
+  slice, *before* generate: a salient, non-``summary`` verdict (a *general*,
+  lasting personal fact/preference/habit — not the current book or this
+  sitting's recap range) is saved immediately via
+  :class:`~api.services.memory_service.MemoryService` — no confirmation needed,
+  unlike a page-range summary — and injected as a system note so generate can
+  acknowledge it instead of asking to save. Best-effort: a failure here never
+  blocks the answer.
 * **generate** — the answer model. When tools are needed it is bound to the six
   tools and drives the tool loop; its final tool-free message is the streamed
   answer. This is the only node whose output is free-form prose.
@@ -45,13 +54,6 @@ Each stage has one job:
   before running, via LangGraph's ``interrupt()``/checkpointer resume;
   ``recommend``'s external branch gates itself the same way from inside the
   tool body instead (the static flag can't express a per-argument gate).
-* **extract_memory** — a cheap-tier :class:`~api.agent.schemas.MemoryClassification`
-  judge over the reader's latest message plus a short prior user/assistant
-  slice: a salient, non-``summary`` verdict (a *general*, lasting personal
-  fact/preference/habit — not the current book or this sitting's recap range)
-  is saved immediately via :class:`~api.services.memory_service.MemoryService`
-  — no confirmation needed, unlike a page-range summary. Best-effort: a
-  failure here never discards the turn's already-generated answer.
 * **persist_memory** — after a turn that named a document
   (``state['active_document_id']``), confirms and saves a page-range summary
   when the reader has advanced past the last one (FR-4.6); a no-op otherwise.
@@ -154,7 +156,7 @@ _NODE_DESCRIPTIONS: dict[str, str] = {
     PLAN: "Planning how to respond...",
     GENERATE: "Preparing a response...",
     TOOLS: "Looking things up...",
-    EXTRACT_MEMORY: "Wrapping up...",
+    EXTRACT_MEMORY: "Noting what you shared...",
     PERSIST_MEMORY: "Updating your reading notes...",
     GUARDRAIL_OUT: "Finalizing your response...",
 }
@@ -270,6 +272,36 @@ def _localized_block_reason(kind: str, language: str) -> str:
     return copies.get(language, copies[_EN])
 
 
+# Deterministic ack after the reader confirms a page-range summary (FR-4.6).
+# Not an LLM call — persist_memory already wrote the memory; generate already
+# streamed the recap. Unknown languages fall back to English like block copy.
+_SUMMARY_SAVED_COPY: dict[str, str] = {
+    "English": "Saved a summary of {title}, pages {page_start}-{page_end}.",
+    "Spanish": "Guardé un resumen de {title}, páginas {page_start}-{page_end}.",
+    "German": "Eine Zusammenfassung von {title}, Seiten {page_start}-{page_end}, wurde gespeichert.",
+    "French": "Résumé de {title}, pages {page_start}-{page_end}, enregistré.",
+    "Italian": "Ho salvato un riassunto di {title}, pagine {page_start}-{page_end}.",
+}
+
+# Prefix of the system note extract_memory injects so generate can see this
+# turn's save without it leaking into later cheap-tier judges as "Summary".
+_SAVED_ABOUT_PREFIX = "Just saved about the reader:"
+
+
+def _summary_saved_ack(title: str, page_start: int, page_end: int, language: str) -> str:
+    """One-line confirmation after a page-range summary is written."""
+    template = _SUMMARY_SAVED_COPY.get(language, _SUMMARY_SAVED_COPY[_EN])
+    return template.format(title=title, page_start=page_start, page_end=page_end)
+
+
+def _with_summary_save_ack(answer: str, state: AgentState) -> str:
+    """Append persist_memory's canned ack, if this turn saved a summary."""
+    ack = state.get("summary_save_ack")
+    if not ack:
+        return answer
+    return f"{answer}\n\n{ack}"
+
+
 @dataclass(slots=True)
 class AgentModels:
     """The LLM entry points the graph nodes call, injected for testability.
@@ -322,6 +354,7 @@ _INJECTED_SYSTEM_PREFIXES = (
     "Reading list for this user:",
     "What we remember about ",
     "Nothing has been saved about ",
+    _SAVED_ABOUT_PREFIX,
 )
 _NO_PRIOR_TURNS = "(none — first turn)"
 
@@ -366,9 +399,10 @@ def _recent_chat_context(
 ) -> str:
     """Format a short prior-turn slice for the cheap-tier judges.
 
-    Drops this turn's assistant reply if it is already on the transcript
-    (``extract_memory`` runs after generate) and the current human utterance
-    (rendered separately as ``$message``). Keeps at most ``max_turns`` earlier
+    Drops a trailing assistant line if one is present (so a caller after
+    generate does not treat this turn's reply as prior context) and the
+    current human utterance (rendered separately as ``$message``). Keeps at
+    most ``max_turns`` earlier
     reader turns plus the assistant/summary lines among them. Shared so
     guardrail, planner, and memory classifier resolve anaphora without the
     full checkpoint or tool payloads.
@@ -780,7 +814,7 @@ def build_agent_graph(
 
     async def generate(state: AgentState) -> dict:
         """Produce the answer, driving the tool loop when tools are needed."""
-        prompt_obj = prompts.get("generate", "v4")
+        prompt_obj = prompts.get("generate", "v5")
         system = SystemMessage(
             content=prompt_obj.render(display_name=display_name, answer_language=answer_language)
         )
@@ -834,15 +868,13 @@ def build_agent_graph(
     async def extract_memory(state: AgentState) -> dict:
         """Save a durable personal fact the reader just shared, if any (FR-7.9).
 
-        Runs the cheap-tier :class:`MemoryClassification` judge over the
-        reader's latest message (plus a short prior-turn slice for follow-ups);
-        a salient, non-``summary`` verdict is saved immediately via
-        :class:`~api.services.memory_service.MemoryService` — no confirmation
-        needed, unlike a page-range summary (FR-4.6). Only general, lasting
-        traits belong here (genre tastes, identity, how they usually read);
-        the current title or a recap range for this sitting must not be
-        persisted, or later sessions replay it as a standing instruction.
-        Best-effort: a classification or write failure never breaks the turn.
+        Runs *before* generate so a salient, non-``summary`` verdict can be
+        written and injected as a system note for this turn's answer — generate
+        otherwise has no signal that the fact was saved and tends to ask.
+        Only general, lasting traits belong here (genre tastes, identity, how
+        they usually read); the current title or a recap range for this sitting
+        must not be persisted. Best-effort: a classification or write failure
+        never blocks the rest of the turn.
         """
         try:
             prompt_obj = prompts.get("memory_classify", "v2")
@@ -877,6 +909,9 @@ def build_agent_graph(
                     type=decision.type,
                     content=decision.content,
                 )
+                return {
+                    "messages": [SystemMessage(content=f"{_SAVED_ABOUT_PREFIX} {decision.content}")]
+                }
         except Exception:
             logger.warning("extract_memory: failed; continuing without it")
         return {}
@@ -891,7 +926,8 @@ def build_agent_graph(
         gap as the new summary's range and pauses (``interrupt()``) for the
         reader to confirm or edit it before anything is written — a deny, no
         active document, or nothing new to recap are all no-ops, never a
-        fabricated summary.
+        fabricated summary. On save, returns a canned ``summary_save_ack``
+        that ``guardrail_out`` appends to the recap (no extra generate call).
         """
         raw_document_id = state.get("active_document_id")
         if raw_document_id is None:
@@ -957,7 +993,11 @@ def build_agent_graph(
                 page=page_end,
             )
             span.update(output={"saved": True, "page_start": page_start, "page_end": page_end})
-        return {}
+        return {
+            "summary_save_ack": _summary_saved_ack(
+                document_title, page_start, page_end, answer_language
+            )
+        }
 
     async def guardrail_out(state: AgentState) -> dict:
         """Sanitize the final answer and, when applicable, screen it for spoilers.
@@ -978,7 +1018,7 @@ def build_agent_graph(
         sanitized = guardrails.sanitize_output(text)
         raw_document_id = state.get("active_document_id")
         if raw_document_id is None:
-            return {"answer": sanitized}
+            return {"answer": _with_summary_save_ack(sanitized, state)}
         document_id = uuid.UUID(raw_document_id)
         row = await tool_context.progress_repo.get_by_document(document_id)
         spoiler_on = resolve_spoiler_safe(
@@ -987,7 +1027,7 @@ def build_agent_graph(
             user_default=tool_context.user_spoiler_safe,
         )
         if row is None or not spoiler_on:
-            return {"answer": sanitized}
+            return {"answer": _with_summary_save_ack(sanitized, state)}
         document_title = await _document_title(tool_context, document_id)
         prompt_obj = prompts.get("spoiler_check", "v1")
         prompt = prompt_obj.render(
@@ -1006,7 +1046,7 @@ def build_agent_graph(
             span.update(output={"spoiler_risk": decision.spoiler_risk})
         logger.info("guardrail_out.spoiler_decision", spoiler_risk=decision.spoiler_risk)
         if not decision.spoiler_risk:
-            return {"answer": sanitized}
+            return {"answer": _with_summary_save_ack(sanitized, state)}
         resolution = interrupt(
             {
                 "kind": "spoiler_warning",
@@ -1019,8 +1059,12 @@ def build_agent_graph(
         )
         action = resolution.get("decision") if isinstance(resolution, dict) else None
         if action == "approve":
-            return {"answer": sanitized}
-        return {"answer": _spoiler_withheld_answer(document_title, row.current_page)}
+            return {"answer": _with_summary_save_ack(sanitized, state)}
+        return {
+            "answer": _with_summary_save_ack(
+                _spoiler_withheld_answer(document_title, row.current_page), state
+            )
+        }
 
     async def compact(state: AgentState) -> dict:
         """Auto-compact the checkpointed history once it's past budget (FR-4.1).
@@ -1052,7 +1096,7 @@ def build_agent_graph(
         last = state["messages"][-1]
         if isinstance(last, AIMessage) and last.tool_calls:
             return TOOLS
-        return EXTRACT_MEMORY
+        return PERSIST_MEMORY
 
     graph = StateGraph(AgentState)
     graph.add_node(NORMALIZE, _traced_node(NORMALIZE, normalize_input))
@@ -1072,10 +1116,10 @@ def build_agent_graph(
     graph.add_conditional_edges(GUARDRAIL_IN, _after_guardrail_in, [LOAD_PROGRESS, END])
     graph.add_edge(LOAD_PROGRESS, LOAD_MEMORIES)
     graph.add_edge(LOAD_MEMORIES, PLAN)
-    graph.add_edge(PLAN, GENERATE)
-    graph.add_conditional_edges(GENERATE, _after_generate, [TOOLS, EXTRACT_MEMORY])
+    graph.add_edge(PLAN, EXTRACT_MEMORY)
+    graph.add_edge(EXTRACT_MEMORY, GENERATE)
+    graph.add_conditional_edges(GENERATE, _after_generate, [TOOLS, PERSIST_MEMORY])
     graph.add_edge(TOOLS, GENERATE)
-    graph.add_edge(EXTRACT_MEMORY, PERSIST_MEMORY)
     graph.add_edge(PERSIST_MEMORY, GUARDRAIL_OUT)
     graph.add_edge(GUARDRAIL_OUT, COMPACT)
     graph.add_edge(COMPACT, END)

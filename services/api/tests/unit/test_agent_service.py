@@ -767,7 +767,7 @@ async def test_llm_spans_carry_prompt_provider_and_model_metadata() -> None:
         "model": "claude-haiku-4-5-20251001",
     }
     assert opened["generate"] == {
-        "prompt": "generate@v4",
+        "prompt": "generate@v5",
         "provider": "anthropic",
         "model": "claude-sonnet-5",
     }
@@ -965,8 +965,7 @@ def test_recent_chat_context_first_turn_has_no_prior() -> None:
 
 
 def test_recent_chat_context_drops_this_turns_answer_after_generate() -> None:
-    # extract_memory runs after generate, so the latest assistant line is this
-    # turn's reply — not prior context.
+    # A trailing assistant line is this turn's reply, not prior context.
     ctx = _recent_chat_context(
         [
             HumanMessage(content="I mostly read sci-fi"),
@@ -1143,6 +1142,32 @@ async def test_extract_memory_saves_a_salient_non_summary_fact() -> None:
     assert call["content"] == "Prefers sci-fi novels."
 
 
+async def test_extract_memory_injects_a_saved_note_before_generate() -> None:
+    # extract_memory runs before generate so this turn's save is in context and
+    # the answer model does not have to guess whether to offer to remember it.
+    memory_service = _FakeMemoryService()
+    classifier = RunnableLambda(
+        lambda _p: MemoryClassification(
+            type=MemoryType.PREFERENCE, salient=True, content="Prefers sci-fi novels."
+        )
+    )
+    model = _AllMessagesCapturingModel()
+    service = _service(_models(answer_model=model, memory_classifier=classifier))
+
+    await service.run(
+        tool_context=_context(memory_service=memory_service),
+        display_name="Ada",
+        message="I love sci-fi novels",
+        conversation_id="extract-note",
+    )
+
+    flattened = model.seen[0]
+    assert any(
+        text.startswith("Just saved about the reader: Prefers sci-fi novels.") for text in flattened
+    )
+    assert memory_service.write_memory_calls
+
+
 async def test_extract_memory_skips_a_non_salient_verdict() -> None:
     memory_service = _FakeMemoryService()
     classifier = RunnableLambda(
@@ -1158,6 +1183,20 @@ async def test_extract_memory_skips_a_non_salient_verdict() -> None:
     )
 
     assert memory_service.write_memory_calls == []
+
+
+async def test_extract_memory_does_not_inject_a_note_when_nothing_saved() -> None:
+    classifier = RunnableLambda(
+        lambda _p: MemoryClassification(type=MemoryType.FACT, salient=False)
+    )
+    model = _AllMessagesCapturingModel()
+    service = _service(_models(answer_model=model, memory_classifier=classifier))
+
+    await service.run(
+        tool_context=_context(), display_name="Ada", message="hi", conversation_id="extract-no-note"
+    )
+
+    assert not any(text.startswith("Just saved about the reader:") for text in model.seen[0])
 
 
 async def test_extract_memory_never_saves_a_summary_typed_verdict() -> None:
@@ -1687,7 +1726,7 @@ async def test_persist_memory_resume_approve_saves_and_advances() -> None:
     )
 
     assert turn.interrupted is False
-    assert turn.answer == "Here's your progress."
+    assert turn.answer == ("Here's your progress.\n\nSaved a summary of The Odyssey, pages 11-50.")
     assert len(memory_service.write_summary_calls) == 1
     saved = memory_service.write_summary_calls[0]
     assert (saved["document_id"], saved["page_start"], saved["page_end"]) == (DOC_ID, 11, 50)
@@ -1746,6 +1785,7 @@ async def test_persist_memory_resume_edit_uses_the_edited_range() -> None:
     assert turn.interrupted is False
     saved = memory_service.write_summary_calls[0]
     assert (saved["page_start"], saved["page_end"]) == (20, 30)
+    assert turn.answer == ("Here's your progress.\n\nSaved a summary of The Odyssey, pages 20-30.")
 
 
 # --- summarize: ask-when-missing (FR-4.7) ------------------------------------- #

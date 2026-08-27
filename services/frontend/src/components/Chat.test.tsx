@@ -280,6 +280,46 @@ describe("Chat", () => {
     expect(screen.getByLabelText(/message/i)).not.toBeDisabled();
   });
 
+  it("keeps a streamed recap when asking to save a summary", async () => {
+    mockFetch({
+      "GET /conversations": () => json(conversationPage()),
+      "POST /chat/stream": () =>
+        sse([
+          sseFrame("conversation", { conversation_id: "conv-1" }),
+          sseFrame("token", { text: "Telemachus searches." }),
+          sseFrame("interrupt", {
+            kind: "page_range_confirm",
+            document_id: "doc-1",
+            document_title: "The Odyssey",
+            proposal: { page_start: 21, page_end: 50, proposal_reason: "pages read since the last summary" },
+          }),
+        ]),
+      "POST /chat/conv-1/resume": () =>
+        json({
+          conversation_id: "conv-1",
+          answer: "Telemachus searches.\n\nSaved a summary of The Odyssey, pages 21-50.",
+          blocked: false,
+          tool_steps: [],
+        }),
+    });
+    render(<Chat />);
+
+    fireEvent.change(screen.getByLabelText(/message/i), {
+      target: { value: "catch me up" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    expect(await screen.findByLabelText(/confirm summary range/i)).toBeInTheDocument();
+    expect(screen.getByText("Telemachus searches.")).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for your input/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /save summary/i }));
+
+    expect(
+      await screen.findByText(/Saved a summary of The Odyssey, pages 21-50/),
+    ).toBeInTheDocument();
+  });
+
   it("resolves an ask-pages-read interrupt (FR-4.7)", async () => {
     mockFetch({
       "GET /conversations": () => json(conversationPage()),

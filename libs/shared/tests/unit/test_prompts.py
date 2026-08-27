@@ -119,6 +119,7 @@ def test_default_store_ships_agent_prompts() -> None:
         "generate@v2",
         "generate@v3",
         "generate@v4",
+        "generate@v5",
         "summarize@v1",
         "compaction@v1",
         "spoiler_check@v1",
@@ -171,7 +172,7 @@ def test_generate_v2_instructs_document_id_sourcing() -> None:
 
 @pytest.mark.unit
 def test_generate_v3_hides_tool_errors() -> None:
-    # Kept resolvable even though v4 is now the latest — v3 is the tool-error
+    # Kept resolvable even though v5 is now the latest — v3 is the tool-error
     # leak fix (a raw "not a valid document id" error, including the document
     # label and id, used to surface verbatim in the streamed answer).
     rendered = (
@@ -187,11 +188,9 @@ def test_generate_v3_hides_tool_errors() -> None:
 
 
 @pytest.mark.unit
-def test_generate_v4_is_the_latest_and_stays_inside_tools() -> None:
-    # v4 is what the agent graph actually resolves ("generate", "v4" pinned in
-    # graph.py) — never suggest workarounds the tools cannot do (copy-paste
-    # document text, recap an attached transcript/image as a book).
-    assert get_prompt_registry().get("generate").version == "v4"
+def test_generate_v4_stays_inside_tools() -> None:
+    # Kept resolvable even though v5 is now the latest — v4 is the capability
+    # bound (never suggest workarounds the tools cannot do).
     rendered = (
         get_prompt_registry()
         .get("generate", "v4")
@@ -203,6 +202,23 @@ def test_generate_v4_is_the_latest_and_stays_inside_tools() -> None:
     assert "copy and paste" in rendered
     assert "Attached audio transcript" in rendered
     assert "do not invent a workaround" in rendered
+
+
+@pytest.mark.unit
+def test_generate_v5_is_the_latest_and_does_not_ask_to_save() -> None:
+    # v5 is what the agent graph actually resolves ("generate", "v5" pinned in
+    # graph.py) — never ask the reader to save a recap or personal fact.
+    assert get_prompt_registry().get("generate").version == "v5"
+    rendered = (
+        get_prompt_registry()
+        .get("generate", "v5")
+        .render(display_name="Ada", answer_language="Spanish")
+    )
+    assert "Ada" in rendered
+    assert "Spanish" in rendered
+    assert "copy and paste" in rendered
+    assert "Never ask the reader whether to save" in rendered
+    assert "Just saved about the reader:" in rendered
 
 
 @pytest.mark.unit

@@ -53,6 +53,10 @@ class AgentState(TypedDict, total=False):
             set by ``compact`` at the end of every turn (FR-4.1.1). Informational
             (the count that actually gates compaction is recomputed fresh each
             turn, not read back from here) — kept for observability/tracing.
+        summary_save_ack: Canned one-line confirmation set by ``persist_memory``
+            after a confirmed page-range summary is written. ``guardrail_out``
+            appends it to the sanitized recap so resume surfaces a short ack
+            without another generate call.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
@@ -68,3 +72,4 @@ class AgentState(TypedDict, total=False):
     answer: str
     active_document_id: str | None
     token_count: int
+    summary_save_ack: str

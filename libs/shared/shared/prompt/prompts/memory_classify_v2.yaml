@@ -8,8 +8,8 @@ description: >
   working notes — the current book, page position, or a recap range for this
   sitting — after those were being saved as preferences and then replayed in
   later sessions (e.g. always recapping the first 10 pages). Produced as a
-  structured MemoryClassification. Runs after generate; a salient verdict is
-  saved immediately.
+  structured MemoryClassification. Runs after plan, before generate, so a
+  salient verdict can be saved and injected as context for this turn's answer.
 input_variables: [message, conversation_context]
 template: |
   You help a personal reading assistant remember durable facts about its reader

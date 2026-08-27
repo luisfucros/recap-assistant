@@ -245,7 +245,9 @@ async def test_persist_memory_confirms_and_saves_against_real_postgres_and_qdran
                 decision={"decision": "approve"},
             )
         assert turn.interrupted is False
-        assert turn.answer == "Here's your progress."
+        assert turn.answer == (
+            "Here's your progress.\n\nSaved a summary of The Odyssey, pages 11-50."
+        )
 
         # The summary memory actually landed in Postgres, correctly page-keyed.
         async with db_sessionmaker() as session:

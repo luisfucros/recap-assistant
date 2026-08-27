@@ -340,9 +340,15 @@ export function Chat(): React.JSX.Element {
           onBlocked: (reason) =>
             patchTurn(assistantId, { content: reason, blocked: true, streaming: false }),
           onInterrupt: (interrupt) => {
-            // A paused turn: nothing else follows on the stream — the reply
-            // stays pending until the prompt below is resolved via resume.
-            patchTurn(assistantId, { content: "Waiting for your input…", streaming: false });
+            // page_range_confirm pauses after generate, so recap tokens may
+            // already be in the bubble — keep them. Other HITL kinds pause
+            // before an answer exists.
+            patchTurn(assistantId, {
+              ...(interrupt.kind === "page_range_confirm"
+                ? {}
+                : { content: "Waiting for your input…" }),
+              streaming: false,
+            });
             setPendingTurnId(assistantId);
             setPendingConversationId(createdId ?? activeId);
             setPendingInterrupt(interrupt);
