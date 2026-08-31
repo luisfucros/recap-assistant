@@ -269,7 +269,7 @@
 - **Formats:** PDF only at launch; parser abstraction ready for more.
 - Users self-report reading position (no e-reader integration in v1).
 - **Frontend styling:** Tailwind CSS utility classes plus a small shared token/primitive layer (FR-20) — no separate component-library runtime dependency.
-- **Deployment:** development runs on Docker Compose (§16 in `spec/architecture.md`); **production runs on AWS via Terraform** (§17 in `spec/architecture.md`, Milestone 10) with RDS Aurora PostgreSQL, Qdrant on Fargate (EBS-backed, S3 snapshots), ElastiCache Redis, ALB, and CloudFront. The application code is **identical across environments**; all differences are infrastructure-level.
+- **Deployment:** development runs on Docker Compose (§16 in `spec/architecture.md`); **production runs on AWS via Terraform** (§17 in `spec/architecture.md`, Milestone 10) with RDS Aurora PostgreSQL, Qdrant on Fargate (EBS-backed, S3 snapshots), ElastiCache Redis, ECR (private image repos + pull-through cache), ALB, and CloudFront. The application code is **identical across environments**; all differences are infrastructure-level.
 
 ## 6. Acceptance criteria (v1 "done")
 

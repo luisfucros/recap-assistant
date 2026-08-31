@@ -346,13 +346,13 @@ Services:
                     ┌────────────┼────────────┐
                     ▼            ▼            ▼
               ┌─────────────────────────────────────────────────────┐
-              │          ECS Fargate Cluster (Private Subnets)       │
-              │  ┌──────────────┐  ┌──────────────┐  ┌──────────┐   │
-              │  │  API Service │  │  Ingestion   │  │  Beat    │   │
-              │  │  (replicas)  │  │  Workers     │  │  (single)│   │
-              │  │  CloudWatch  │  │  (autoscale) │  │  (docker)│   │
-              │  │  logs        │  │              │  │          │   │
-              │  └──────────────┘  └──────────────┘  └──────────┘   │
+              │          ECS Fargate Cluster (Private Subnets)              │
+              │  ┌────────┐ ┌────────┐ ┌──────────┐ ┌───────────┐ ┌──────┐ │
+              │  │  API   │ │  Eval  │ │ Eval     │ │ Ingestion │ │Ing.  │ │
+              │  │ (HTTP) │ │ worker │ │ beat (1) │ │ workers   │ │beat  │ │
+              │  └────────┘ └────────┘ └──────────┘ └───────────┘ └──────┘ │
+              │  one-shot: migrate (recap-migrate) + checkpointer-setup    │
+              │            (recap-api image, different command)            │
               └────┬─────────────────────┬────────────────────┬─────┘
                    │                     │                    │
          ┌─────────▼──────┐  ┌──────────▼────────┐  ┌────────▼────────┐
@@ -365,12 +365,12 @@ Services:
                     ▲
             ┌───────┴────────┐
             ▼                ▼
-        ┌────────┐      ┌─────────┐
-        │   S3   │      │ Secrets  │
-        │buckets │      │ Manager  │
-        │(docs,  │      │(API keys,│
-        │backups)│      │DB creds) │
-        └────────┘      └─────────┘
+        ┌────────┐      ┌─────────┐      ┌─────────┐
+        │   S3   │      │ Secrets  │      │   ECR   │
+        │buckets │      │ Manager  │      │ 3 repos │
+        │(docs,  │      │(API keys,│      │ (shared │
+        │backups)│      │DB creds) │      │ images) │
+        └────────┘      └─────────┘      └─────────┘
 ```
 
 ### Services
@@ -379,16 +379,17 @@ Services:
 - **RDS Aurora PostgreSQL** (multi-AZ primary + read replica) replaces the Postgres container; automated backups retained 7 days, encrypted at rest, accessible only from the private VPC.
 - **ElastiCache for Redis** (multi-AZ, automatic failover) replaces the Redis container; the Celery broker, cache, and session store. A small number of nodes covers both the low-throughput cache and the bursty broker load.
 - **S3 buckets:** document storage (`<account-id>-recap-documents`), Qdrant EBS volume snapshots (`<account-id>-recap-qdrant-backups`).
+- **ECR (Elastic Container Registry):** private repositories follow Dockerfiles (one repo per image), not Compose/ECS service names. `recap-api` (`services/api/Dockerfile`) is pulled by the HTTP API, eval worker, eval-beat, and the one-shot checkpointer-setup task; `recap-ingestion` (`services/ingestion/Dockerfile`) by the ingestion worker and ingestion-beat; `recap-migrate` (`docker/migrate.Dockerfile`) by the one-shot Alembic job only — checkpointer-setup cannot reuse it (the migrate image is shared-only and has no psycopg/LangGraph). Each of those is still a distinct ECS task definition (command, sizing, desired count). Scan-on-push, immutable tags (git SHA), lifecycle expiry of stale images. An ECR **pull-through cache** fronts public registries so Qdrant/Prometheus/Grafana tasks never pull Docker Hub at runtime. The frontend is not an image in production (S3 + CloudFront).
 - **AWS Secrets Manager** stores database credentials, LLM/embedding API keys, JWT secrets, and signing keys; rotatable, never logged.
 
 **Application services (ECS Fargate, private subnets):**
 - **API service** — stateless FastAPI app, 2+ task replicas by default, scales on CloudWatch CPU/memory metrics. Each task definition specifies memory (512 MB min, e.g. 1024 MB for spare headroom), CPU (0.25–1 vCPU), log routing to CloudWatch, and a long-running HTTP container. Health checks via ALB target group every 30 s.
-- **Eval workers** — same API image as a Celery consumer on queue `eval` (FR-12.5); 1+ replicas, scaled independently of HTTP API tasks and of ingestion. Do not run eval on ingestion task definitions.
-- **Eval beat** — single Celery beat task on the eval app (stuck-run sweep). Do not share the ingestion beat.
-- **Ingestion workers** — stateless Celery worker app; 1+ replicas, auto-scales from 1 to 5+ based on SQS `ApproximateNumberOfMessages` (via `aws-autoscaling` service). Each task similar to API (memory, CPU, logs).
-- **Ingestion beat** — single Celery beat task (no auto-scale for statefulness) running the outbox relay every 5 s on a dedicated task definition with lower resource requirements.
-- **One-shot Migrate job** — an ECS task definition (not a service) that runs `alembic upgrade head` as a pre-deploy step; the main task-definition launch plan waits for its completion (via CloudWatch event / SNS / Lambda, or manual orchestration depending on deploy approach).
-- **One-shot Checkpointer-setup job** — an ECS task definition that runs `python -m api.checkpointer` to initialize the LangGraph checkpoint tables in Postgres (idempotent; safe to re-run). Runs after Migrate and before the first API task starts.
+- **Eval workers** — same `recap-api` image as a Celery consumer on queue `eval` (FR-12.5); dedicated task definition + service, 1+ replicas, scaled independently of HTTP API tasks and of ingestion. Do not run eval on ingestion task definitions.
+- **Eval beat** — same `recap-api` image; dedicated task definition, `desired_count=1` (stuck-run sweep). Do not share the ingestion beat.
+- **Ingestion workers** — `recap-ingestion` image; stateless Celery worker; 1+ replicas, auto-scales from 1 to 5+ based on SQS `ApproximateNumberOfMessages` (via `aws-autoscaling` service). Each task similar to API (memory, CPU, logs).
+- **Ingestion beat** — same `recap-ingestion` image; dedicated task definition, `desired_count=1` (outbox relay; no auto-scale). Do not share eval-beat.
+- **One-shot Migrate job** — `recap-migrate` image; ECS task definition (not a service) that runs `alembic upgrade head` as a pre-deploy step; the main task-definition launch plan waits for its completion (via CloudWatch event / SNS / Lambda, or manual orchestration depending on deploy approach).
+- **One-shot Checkpointer-setup job** — `recap-api` image with command `python -m api.checkpointer` (not `recap-migrate` — that image has no psycopg/LangGraph). Idempotent; runs after Migrate and before the first API/eval task starts.
 
 **Qdrant (single instance):**
 A **single-task Qdrant service on Fargate with EBS-backed persistent storage**. The task definition attaches an **EBS volume** (allocated to that task only; AWS now supports EBS on Fargate) and mounts it to `/qdrant/storage`. Qdrant runs behind an **internal Network Load Balancer** (NLB) — not exposed to the internet — for service discovery and zero-downtime restarts (the ALB routes chat requests to the API; the API's Qdrant client discovers the NLB endpoint via DNS). **No auto-scaling** (a single instance to preserve statefulness). **Daily snapshots** of the EBS volume are taken (via AWS Backup or a Lambda-scheduled EC2 CreateSnapshot call if the volume is attached to a Fargate task — AWS documentation for Fargate + EBS details the snapshot mechanism) and stored in S3 with a **7-day retention policy**. On catastrophic loss, a new Qdrant task can mount a restored snapshot and resume.
@@ -411,7 +412,7 @@ A **single-task Qdrant service on Fargate with EBS-backed persistent storage**. 
 
 ### Observability at scale
 
-- **CloudWatch logs:** all services log to CloudWatch (no need for a separate ELK/Loki stack locally); log groups per service (`/recap/api`, `/recap/ingestion`, `/recap/qdrant`), with a **retention policy** (default 30 days).
+- **CloudWatch logs:** all services log to CloudWatch (no need for a separate ELK/Loki stack locally); log groups per **task** (`/recap/api`, `/recap/eval`, `/recap/eval-beat`, `/recap/ingestion`, `/recap/ingestion-beat`, `/recap/migrate`, `/recap/checkpointer-setup`, `/recap/qdrant`), with a **retention policy** (default 30 days). Shared images still get separate log groups so a beat or eval failure is not buried in the HTTP API stream.
 - **Prometheus + Grafana:** both services continue exporting `/metrics` to Prometheus. A managed Prometheus workspace (AWS Managed Service for Prometheus, optional) or a self-hosted Prometheus in EC2 scrapes the endpoints. Grafana (managed or self-hosted) displays the same dashboards as Docker Compose.
 - **CloudWatch dashboards:** CPU, memory, network, errors, and request latency per service; RDS and ElastiCache metrics; Qdrant task state and EBS volume usage.
 - **Alarms:** on API error rate > 5%, ingestion task failure, RDS CPU > 80%, Qdrant task state mismatch.
@@ -419,9 +420,9 @@ A **single-task Qdrant service on Fargate with EBS-backed persistent storage**. 
 
 ### Deployment & CI/CD
 
-- **Terraform modules** organize infrastructure by concern: `vpc`, `rds`, `elasticache`, `ecs` (shared task definition factory), `ecs_api_service`, `ecs_ingestion_service`, `qdrant_ecs`, `alb`, `s3`, `secrets`, `cloudwatch`, `iam`.
-- **Docker images:** two images (`api` and `ingestion`), built via CI and pushed to ECR (Elastic Container Registry); task definitions reference ECR image URIs with `:latest` tag (or semantic versions for immutability).
-- **Deploy process:** `terraform plan` → review → `terraform apply`. The Migrate job is run as a pre-deploy Lambda or manual step before rolling out new API/ingestion revisions.
+- **Terraform modules** organize infrastructure by concern: `vpc`, `ecr`, `rds`, `elasticache`, `ecs` (shared task definition factory), `ecs_api_service` (HTTP API + eval worker + eval-beat + checkpointer-setup — all pull `recap-api`; migrate is a separate one-shot on `recap-migrate`), `ecs_ingestion_service` (worker + beat, both `recap-ingestion`), `qdrant_ecs`, `alb`, `s3`, `secrets`, `cloudwatch`, `iam`.
+- **Docker images:** three images (`api`, `ingestion`, `migrate`) covering seven app containers (api, eval, eval-beat, checkpointer-setup, ingestion, ingestion-beat, migrate), built via CI, tagged with the git SHA, and pushed to the matching ECR repository; each ECS task definition references the URI of the image it shares. GitHub Actions authenticates to ECR with OIDC (no long-lived keys).
+- **Deploy process:** `terraform plan` → review → `terraform apply`. Migrate then checkpointer-setup run as pre-deploy one-shot tasks before rolling out new API, eval, and ingestion revisions.
 - **Blue-green deployments:** ALB target groups enable rolling updates: new task revisions are started with health checks; traffic drains from old tasks; old tasks are terminated. Zero-downtime deploys.
 - **Terraform workspaces** or separate tfvar files support staging / production environments with config overrides (instance counts, CPU/memory, backup retention).
 
@@ -431,7 +432,7 @@ Docker Compose (§16) remains the dev/test environment. No Terraform/AWS knowled
 
 ---
 
-**Implementation:** See **Milestone 10** in `spec/tasks.md` for detailed tasks: Terraform module structure, VPC/networking, RDS setup, Qdrant + EBS configuration, ElastiCache provisioning, S3 buckets, ECS task definitions, ALB/CloudFront, secrets management, IAM policies, CloudWatch monitoring, CI/CD integration, runbooks, and validation checklists.
+**Implementation:** See **Milestone 10** in `spec/tasks.md` for detailed tasks: Terraform module structure, VPC/networking, ECR repositories + pull-through cache, RDS setup, Qdrant + EBS configuration, ElastiCache provisioning, S3 buckets, ECS task definitions, ALB/CloudFront, secrets management, IAM policies, CloudWatch monitoring, CI/CD integration, runbooks, and validation checklists.
 
 ## 18. Key design decisions (rationale)
 
