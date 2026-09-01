@@ -365,12 +365,12 @@ Services:
                     ▲
             ┌───────┴────────┐
             ▼                ▼
-        ┌────────┐      ┌─────────┐      ┌─────────┐
-        │   S3   │      │ Secrets  │      │   ECR   │
-        │buckets │      │ Manager  │      │ 3 repos │
-        │(docs,  │      │(API keys,│      │ (shared │
-        │backups)│      │DB creds) │      │ images) │
-        └────────┘      └─────────┘      └─────────┘
+        ┌────────┐                       ┌─────────┐
+        │   S3   │                       │   ECR   │
+        │buckets │                       │ 3 repos │
+        │(docs,  │                       │ (shared │
+        │backups)│                       │ images) │
+        └────────┘                       └─────────┘
 ```
 
 ### Services
@@ -380,7 +380,7 @@ Services:
 - **ElastiCache for Redis** (multi-AZ, automatic failover) replaces the Redis container; the Celery broker, cache, and session store. A small number of nodes covers both the low-throughput cache and the bursty broker load.
 - **S3 buckets:** document storage (`<account-id>-recap-documents`), Qdrant EBS volume snapshots (`<account-id>-recap-qdrant-backups`).
 - **ECR (Elastic Container Registry):** private repositories follow Dockerfiles (one repo per image), not Compose/ECS service names. `recap-api` (`services/api/Dockerfile`) is pulled by the HTTP API, eval worker, eval-beat, and the one-shot checkpointer-setup task; `recap-ingestion` (`services/ingestion/Dockerfile`) by the ingestion worker and ingestion-beat; `recap-migrate` (`docker/migrate.Dockerfile`) by the one-shot Alembic job only — checkpointer-setup cannot reuse it (the migrate image is shared-only and has no psycopg/LangGraph). Each of those is still a distinct ECS task definition (command, sizing, desired count). Scan-on-push, immutable tags (git SHA), lifecycle expiry of stale images. An ECR **pull-through cache** fronts public registries so Qdrant/Prometheus/Grafana tasks never pull Docker Hub at runtime. The frontend is not an image in production (S3 + CloudFront).
-- **AWS Secrets Manager** stores database credentials, LLM/embedding API keys, JWT secrets, and signing keys; rotatable, never logged.
+- **Config is env-only** (matches NFR-9 and the app's existing `Settings` path). Sensitive values are Terraform `sensitive` variables from a gitignored tfvars / `TF_VAR_*`, injected as ECS task `environment` entries — **not** AWS Secrets Manager or Parameter Store. Those services bill per secret and are the wrong cost profile for a learning deploy; RDS must not use `manage_master_user_password` (it auto-creates a billed SM secret). Trade-off: values appear in the task definition and Terraform state for anyone with those permissions; swapping to Secrets Manager later is an injection-site change, not an app change.
 
 **Application services (ECS Fargate, private subnets):**
 - **API service** — stateless FastAPI app, 2+ task replicas by default, scales on CloudWatch CPU/memory metrics. Each task definition specifies memory (512 MB min, e.g. 1024 MB for spare headroom), CPU (0.25–1 vCPU), log routing to CloudWatch, and a long-running HTTP container. Health checks via ALB target group every 30 s.
@@ -401,7 +401,7 @@ A **single-task Qdrant service on Fargate with EBS-backed persistent storage**. 
 - **VPC** with public subnets (ALB, NAT) and private subnets (ECS, RDS, ElastiCache, Qdrant). No direct internet access from application services; outbound traffic via NAT gateway.
 - **Security groups:** ALB allows inbound on ports 80/443; ECS services allow inbound from ALB only; RDS/ElastiCache/Qdrant allow inbound from ECS only. Egress is granular (outbound HTTPS to hosted API endpoints, no arbitrary internet access).
 - **HTTPS everywhere:** ALB terminates TLS (certificate via ACM), routes to task HTTP; tasks communicate internally via HTTP (no need for per-task TLS overhead).
-- **Secrets injection:** database credentials, API keys, and signing keys are injected into task environments from Secrets Manager at task launch, never stored in task definitions or code.
+- **Config injection:** database credentials, API keys, and signing keys are Terraform-supplied env vars on the Fargate task (gitignored tfvars, never committed, never baked into images). They **are** present on the task definition — acceptable for this learning deploy; do not add Secrets Manager "just in case."
 
 ### Data durability & disaster recovery
 
@@ -420,7 +420,7 @@ A **single-task Qdrant service on Fargate with EBS-backed persistent storage**. 
 
 ### Deployment & CI/CD
 
-- **Terraform modules** organize infrastructure by concern: `vpc`, `ecr`, `rds`, `elasticache`, `ecs` (shared task definition factory), `ecs_api_service` (HTTP API + eval worker + eval-beat + checkpointer-setup — all pull `recap-api`; migrate is a separate one-shot on `recap-migrate`), `ecs_ingestion_service` (worker + beat, both `recap-ingestion`), `qdrant_ecs`, `alb`, `s3`, `secrets`, `cloudwatch`, `iam`.
+- **Terraform modules** organize infrastructure by concern: `vpc`, `ecr`, `rds`, `elasticache`, `ecs` (shared task definition factory), `ecs_api_service` (HTTP API + eval worker + eval-beat + checkpointer-setup — all pull `recap-api`; migrate is a separate one-shot on `recap-migrate`), `ecs_ingestion_service` (worker + beat, both `recap-ingestion`), `qdrant_ecs`, `alb`, `s3`, `cloudwatch`, `iam`. No `secrets` module — config is variables → task env. **No state-backend module** — remote state uses an already-created S3 (+ lock table) backend the operator supplies via `terraform init -backend-config`; this stack never creates the state bucket or DynamoDB lock table.
 - **Docker images:** three images (`api`, `ingestion`, `migrate`) covering seven app containers (api, eval, eval-beat, checkpointer-setup, ingestion, ingestion-beat, migrate), built via CI, tagged with the git SHA, and pushed to the matching ECR repository; each ECS task definition references the URI of the image it shares. GitHub Actions authenticates to ECR with OIDC (no long-lived keys).
 - **Deploy process:** `terraform plan` → review → `terraform apply`. Migrate then checkpointer-setup run as pre-deploy one-shot tasks before rolling out new API, eval, and ingestion revisions.
 - **Blue-green deployments:** ALB target groups enable rolling updates: new task revisions are started with health checks; traffic drains from old tasks; old tasks are terminated. Zero-downtime deploys.
@@ -432,7 +432,7 @@ Docker Compose (§16) remains the dev/test environment. No Terraform/AWS knowled
 
 ---
 
-**Implementation:** See **Milestone 10** in `spec/tasks.md` for detailed tasks: Terraform module structure, VPC/networking, ECR repositories + pull-through cache, RDS setup, Qdrant + EBS configuration, ElastiCache provisioning, S3 buckets, ECS task definitions, ALB/CloudFront, secrets management, IAM policies, CloudWatch monitoring, CI/CD integration, runbooks, and validation checklists.
+**Implementation:** See **Milestone 10** in `spec/tasks.md` for detailed tasks: Terraform module structure (against a pre-existing remote state backend), VPC/networking, ECR repositories + pull-through cache, RDS setup, Qdrant + EBS configuration, ElastiCache provisioning, S3 buckets (app data only, not Terraform state), ECS task definitions, ALB/CloudFront, env-based config (no Secrets Manager), IAM policies, CloudWatch monitoring, CI/CD integration, runbooks, and validation checklists.
 
 ## 18. Key design decisions (rationale)
 
