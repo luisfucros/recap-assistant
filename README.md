@@ -23,15 +23,17 @@ services/api/       FastAPI + LangGraph agent service
 services/ingestion/ Celery ingestion pipeline (worker + beat)
 services/frontend/  React + Vite SPA
 docker/             Dockerfiles and provisioning (migrate image, prometheus, grafana)
+infra/terraform/    AWS Terraform (Milestone 10) — VPC + ECR today; more modules later
 spec/               Authoritative design: requirements, architecture, tasks (roadmap)
 docker-compose.yml  Local full-stack orchestration
+Makefile            Local Compose + Terraform wrappers (`make help`)
 ```
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) (Python 3.13 is fetched automatically)
 - Docker + Docker Compose (for the full stack)
-- Node.js 22+ (for the frontend)
+- Terraform **1.15.x** and AWS credentials (only if applying Milestone 10; see `infra/terraform/README.md`)
 
 ## Setup
 
@@ -45,9 +47,12 @@ uv sync --all-packages        # create the workspace venv with every member inst
 ## Run the full stack
 
 ```bash
-docker compose up --build          # add -d to detach
-docker compose watch               # dev mode: sync source + reload on change
+make up-d                          # docker compose up --build -d
+make watch                         # docker compose watch (sync + reload)
+make down                          # stop containers, keep volumes
 ```
+
+Equivalent Compose commands (`docker compose up --build`, `docker compose watch`) still work. AWS deploy wrappers are `make tf-init` / `make tf-plan` / `make tf-apply` after copying `infra/terraform/backend.hcl.example` and `environments/dev.tfvars.example` — see [`infra/terraform/README.md`](infra/terraform/README.md).
 
 A one-shot `migrate` container runs database migrations to completion, then the services start. Once up:
 
@@ -74,15 +79,15 @@ uv run celery -A api.eval_worker.celery_app:app worker --queues=eval -l INFO  # 
 ## Tests
 
 ```bash
-uv run pytest -m unit          # fast, no I/O — runs anywhere
+make test-unit                 # uv run pytest -m unit (fast, no I/O)
 
 # The integration tier runs against throwaway infra (Postgres/Qdrant/MinIO) on
 # offset ports, isolated from the dev stack. Start it first; the tier skips
 # cleanly (with a hint) if it isn't running.
-docker compose -f docker-compose.test.yml up -d
+make test-infra
 uv run pytest -m integration   # repositories/services/pipeline vs real infra
 uv run pytest -m functional    # HTTP-level against the app (DB mocked at the boundary)
-docker compose -f docker-compose.test.yml down -v   # tear down when done
+make test-infra-down           # tear down when done
 
 cd services/frontend && npm install && npm test
 ```

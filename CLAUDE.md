@@ -44,14 +44,13 @@ These are the load-bearing rules — breaking them is a bug, not a style choice:
 
 ## Commands
 
-No build tooling is checked in yet. Tool boundaries established by config / intended by the specs:
-
+- **Local stack:** `make up` / `make up-d` / `make watch` / `make down` wrap `docker compose`. Optional compose profiles: `langfuse`, `ollama`.
+- **AWS Terraform (Milestone 10):** `infra/terraform/` — Terraform **1.15.x**, AWS provider **6.57.1**. Copy `backend.hcl.example` → `backend.hcl` (existing state bucket; this stack never creates it) and `environments/dev.tfvars.example` → `dev.tfvars`, then `make tf-init` / `make tf-plan` / `make tf-apply`. `make tf-destroy` leaves the operator backend intact.
 - **Lint/format (Python):** ruff — `ruff check --select I --fix <file>` (imports), `ruff format <file>`, `ruff check --fix <file>`. A `PostToolUse` hook runs these on every `.py` Write/Edit.
 - **Migrations:** Alembic lives in `libs/shared/db/`; a dedicated one-shot **`migrate`** container runs `alembic upgrade head` and exits. **Never auto-migrate on service startup** (replicas race on `alembic_version`). Services gate on `migrate` via `depends_on: service_completed_successfully`.
 - **Sync the venv:** `uv sync --all-packages` — plain `uv sync` only syncs the virtual workspace root and **prunes the members** (fastapi/langchain/shared vanish, imports/tests break). Always use `--all-packages` for dev/test.
-- **Tests (pytest markers):** `uv run pytest -m unit` / `-m integration` / `-m functional`; single test `uv run pytest path/to/test_file.py::test_name`. Unit suite < 2 s (no I/O); always mock LLM/external hosted APIs.
-- **Run the stack:** `docker compose up` (`migrate` runs first). Optional compose profiles: `langfuse`, `ollama`. `docker compose watch` for dev reload.
-- **Frontend:** `npm test` / `npm run <script>` (allowed without prompt; scripts TBD once `package.json` exists).
+- **Tests (pytest markers):** `uv run pytest -m unit` / `-m integration` / `-m functional`; single test `uv run pytest path/to/test_file.py::test_name`. Unit suite < 2 s (no I/O); always mock LLM/external hosted APIs. `make test-infra` starts the throwaway compose test stack.
+- **Frontend:** `npm test` / `npm run <script>`.
 
 ## Gotchas
 
