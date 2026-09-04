@@ -19,20 +19,37 @@
 # - Terraform **1.15.x** (not 1.16 yet — 1.16.0 is release-week). `tfenv` /
 #   `asdf` will pick up `.terraform-version`.
 # - AWS credentials that can manage VPC + ECR in `var.aws_region`.
+# - Docker + AWS CLI (to build/push images after ECR exists).
 # - An existing state backend.
 #
 # ## First apply
+#
+# ECR must exist before images can be pushed, and images must exist before
+# later ECS tasks (and Qdrant/Prometheus/Grafana) can start. The Makefile
+# encodes that order:
 #
 # ```bash
 # cp backend.hcl.example backend.hcl          # edit bucket / key / table
 # cp environments/dev.tfvars.example environments/dev.tfvars
 # make tf-init
-# make tf-plan
-# make tf-apply
+# make aws-bootstrap                          # ECR → linux/amd64 images → rest
 # ```
 #
-# `make tf-destroy` tears down VPC + ECR only. It does **not** touch the
-# operator-owned state backend.
+# Equivalent step-by-step (each `apply` asks for confirmation unless
+# `TF_AUTO_APPROVE=1`):
+#
+# ```bash
+# make tf-apply-ecr                           # repos + ECR Public pull-through
+# make images-push                            # git SHA + latest → recap-{api,ingestion,migrate}
+# make tf-apply                               # VPC today; ECS/RDS in later slices
+# ```
+#
+# Images are built `--platform=linux/amd64` (Fargate). Override the tag with
+# `IMAGE_TAG=...` if you are not pushing `git rev-parse HEAD`.
+#
+# `make tf-destroy` tears down whatever this stack manages. It does **not**
+# touch the operator-owned state backend. Repos that still contain images
+# will fail to delete until those images are expired or deleted.
 #
 # ## Versions
 #

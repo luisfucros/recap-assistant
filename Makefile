@@ -94,10 +94,18 @@ tf-plan-ecr: _require-tfvars ## terraform plan for ECR only
 tf-apply-ecr: _require-tfvars ## Create/update ECR repos and pull-through cache (no VPC/ECS)
 	$(TF) apply $(TF_APPLY_FLAGS) -var-file=$(abspath $(TFVARS)) -target=module.ecr
 
+# Region comes from tfvars, not Terraform state — new outputs are missing until
+# the next apply, and images-push must work right after the first tf-apply-ecr.
+# Repo URLs come from ecr_repository_urls (present as soon as module.ecr exists).
+tfvars_aws_region = $(shell awk -F'"' '/^[[:space:]]*aws_region[[:space:]]*=/{print $$2; exit}' $(TFVARS))
+
 .PHONY: ecr-login
-ecr-login: ## docker login to this account's ECR (requires tf-apply-ecr)
-	@host="$$($(TF) output -raw ecr_registry_host)"; \
-	region="$$($(TF) output -raw aws_region)"; \
+ecr-login: _require-tfvars ## docker login to this account's ECR (requires tf-apply-ecr)
+	@region="$(tfvars_aws_region)"; \
+	test -n "$$region" || { echo "Could not read aws_region from $(TFVARS)."; exit 1; }; \
+	url="$$($(TF) output -json ecr_repository_urls | python3 -c 'import json,sys; print(json.load(sys.stdin)["api"])')"; \
+	host="$${url%%/*}"; \
+	test -n "$$host" || { echo "Could not read ECR URL from terraform state. Run make tf-apply-ecr first."; exit 1; }; \
 	aws ecr get-login-password --region "$$region" | docker login --username AWS --password-stdin "$$host"
 
 .PHONY: images-push
@@ -109,7 +117,8 @@ images-push: ecr-login ## Build linux/amd64 images and push git-SHA + latest tag
 .PHONY: image-push
 image-push:
 	@test -n "$(IMAGE_KEY)" && test -n "$(DOCKERFILE)"
-	@url="$$($(TF) output -raw ecr_repository_url_$(IMAGE_KEY))"; \
+	@url="$$($(TF) output -json ecr_repository_urls | python3 -c 'import json,sys; print(json.load(sys.stdin)["$(IMAGE_KEY)"])')"; \
+	test -n "$$url" || { echo "Unknown IMAGE_KEY=$(IMAGE_KEY) in ecr_repository_urls."; exit 1; }; \
 	echo "Building $(DOCKERFILE) → $$url:$(IMAGE_TAG) (platform $(DOCKER_PLATFORM))"; \
 	docker build --platform=$(DOCKER_PLATFORM) -f $(DOCKERFILE) -t "$$url:$(IMAGE_TAG)" -t "$$url:latest" .; \
 	docker push "$$url:$(IMAGE_TAG)"; \

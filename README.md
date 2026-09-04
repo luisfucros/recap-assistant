@@ -52,7 +52,9 @@ make watch                         # docker compose watch (sync + reload)
 make down                          # stop containers, keep volumes
 ```
 
-Equivalent Compose commands (`docker compose up --build`, `docker compose watch`) still work. AWS deploy wrappers are `make tf-init` / `make tf-plan` / `make tf-apply` after copying `infra/terraform/backend.hcl.example` and `environments/dev.tfvars.example` — see [`infra/terraform/README.md`](infra/terraform/README.md).
+Equivalent Compose commands (`docker compose up --build`, `docker compose watch`) still work.
+
+AWS deploy is sequenced so ECS never starts before images exist: copy `infra/terraform/backend.hcl.example` and `environments/dev.tfvars.example`, then `make tf-init` and `make aws-bootstrap` (ECR → push images → remaining Terraform). See [`infra/terraform/README.md`](infra/terraform/README.md).
 
 A one-shot `migrate` container runs database migrations to completion, then the services start. Once up:
 
