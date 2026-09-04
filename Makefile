@@ -1,4 +1,7 @@
 # Local Docker Compose and AWS Terraform entrypoints.
+#
+# AWS order matters once ECS exists: create ECR, push linux/amd64 images,
+# then apply the rest (VPC today; later RDS/ECS pull those tags).
 
 .DEFAULT_GOAL := help
 
@@ -8,6 +11,15 @@ TF_DIR       ?= infra/terraform
 BACKEND      ?= $(TF_DIR)/backend.hcl
 TFVARS       ?= $(TF_DIR)/environments/dev.tfvars
 TF           ?= terraform -chdir=$(TF_DIR)
+TF_APPLY_FLAGS ?=
+
+# Fargate is linux/amd64. Apple Silicon must set this or the image will not run.
+DOCKER_PLATFORM ?= linux/amd64
+IMAGE_TAG       ?= $(shell git rev-parse HEAD)
+
+ifeq ($(TF_AUTO_APPROVE),1)
+override TF_APPLY_FLAGS += -auto-approve
+endif
 
 .PHONY: help
 help: ## List targets
@@ -66,17 +78,53 @@ tf-fmt: ## terraform fmt (recursive)
 tf-validate: ## terraform validate (run tf-init first)
 	$(TF) validate
 
-.PHONY: tf-plan
-tf-plan: ## terraform plan with environments/dev.tfvars
+.PHONY: _require-tfvars
+_require-tfvars:
 	@test -f $(TFVARS) || { echo "Missing $(TFVARS). Copy $(TF_DIR)/environments/dev.tfvars.example."; exit 1; }
+
+.PHONY: tf-plan
+tf-plan: _require-tfvars ## terraform plan (full stack)
 	$(TF) plan -var-file=$(abspath $(TFVARS))
 
+.PHONY: tf-plan-ecr
+tf-plan-ecr: _require-tfvars ## terraform plan for ECR only
+	$(TF) plan -var-file=$(abspath $(TFVARS)) -target=module.ecr
+
+.PHONY: tf-apply-ecr
+tf-apply-ecr: _require-tfvars ## Create/update ECR repos and pull-through cache (no VPC/ECS)
+	$(TF) apply $(TF_APPLY_FLAGS) -var-file=$(abspath $(TFVARS)) -target=module.ecr
+
+.PHONY: ecr-login
+ecr-login: ## docker login to this account's ECR (requires tf-apply-ecr)
+	@host="$$($(TF) output -raw ecr_registry_host)"; \
+	region="$$($(TF) output -raw aws_region)"; \
+	aws ecr get-login-password --region "$$region" | docker login --username AWS --password-stdin "$$host"
+
+.PHONY: images-push
+images-push: ecr-login ## Build linux/amd64 images and push git-SHA + latest tags
+	$(MAKE) image-push IMAGE_KEY=api DOCKERFILE=services/api/Dockerfile
+	$(MAKE) image-push IMAGE_KEY=ingestion DOCKERFILE=services/ingestion/Dockerfile
+	$(MAKE) image-push IMAGE_KEY=migrate DOCKERFILE=docker/migrate.Dockerfile
+
+.PHONY: image-push
+image-push:
+	@test -n "$(IMAGE_KEY)" && test -n "$(DOCKERFILE)"
+	@url="$$($(TF) output -raw ecr_repository_url_$(IMAGE_KEY))"; \
+	echo "Building $(DOCKERFILE) → $$url:$(IMAGE_TAG) (platform $(DOCKER_PLATFORM))"; \
+	docker build --platform=$(DOCKER_PLATFORM) -f $(DOCKERFILE) -t "$$url:$(IMAGE_TAG)" -t "$$url:latest" .; \
+	docker push "$$url:$(IMAGE_TAG)"; \
+	docker push "$$url:latest"
+
 .PHONY: tf-apply
-tf-apply: ## terraform apply with environments/dev.tfvars (interactive)
-	@test -f $(TFVARS) || { echo "Missing $(TFVARS). Copy $(TF_DIR)/environments/dev.tfvars.example."; exit 1; }
-	$(TF) apply -var-file=$(abspath $(TFVARS))
+tf-apply: _require-tfvars ## Apply remaining Terraform (VPC today; later ECS after images-push)
+	$(TF) apply $(TF_APPLY_FLAGS) -var-file=$(abspath $(TFVARS))
+
+.PHONY: aws-bootstrap
+aws-bootstrap: ## Sequential AWS deploy: ECR → push images → rest of the stack
+	$(MAKE) tf-apply-ecr
+	$(MAKE) images-push
+	$(MAKE) tf-apply
 
 .PHONY: tf-destroy
-tf-destroy: ## Destroy VPC + ECR (leaves the remote state backend intact)
-	@test -f $(TFVARS) || { echo "Missing $(TFVARS). Copy $(TF_DIR)/environments/dev.tfvars.example."; exit 1; }
-	$(TF) destroy -var-file=$(abspath $(TFVARS))
+tf-destroy: _require-tfvars ## Destroy managed resources (leaves the remote state backend intact)
+	$(TF) destroy $(TF_APPLY_FLAGS) -var-file=$(abspath $(TFVARS))
