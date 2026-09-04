@@ -1,0 +1,9 @@
+# Copy to environments/dev.tfvars (gitignored) before `terraform plan`.
+aws_region  = "us-east-1"
+environment = "dev"
+project     = "recap"
+vpc_cidr    = "10.42.0.0/16"
+az_count    = 2
+
+# Single NAT in one public subnet. Biggest bill in this slice (~$32/mo + data).
+enable_nat_gateway = true

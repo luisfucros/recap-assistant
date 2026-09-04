@@ -1,0 +1,10 @@
+# Copy to backend.hcl (gitignored) and fill in the already-created backend.
+# Then: terraform init -backend-config=backend.hcl
+#
+# This file is never applied as Terraform config; it is only backend-config.
+
+bucket         = "your-existing-tfstate-bucket"
+key            = "recap/dev/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "your-existing-lock-table"
+encrypt        = true
